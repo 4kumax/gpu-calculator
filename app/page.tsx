@@ -43,7 +43,7 @@ export default function CalculatorPage(){
 
   return <main className="page-shell">
     <div className="page-heading">
-      <div><div className="eyebrow"><SlidersHorizontal size={15}/>Управленческий калькулятор</div><h1>GPU-инфраструктура для задач «ЕвроХима»</h1></div>
+      <div><div className="eyebrow"><SlidersHorizontal size={15}/>Управленческий калькулятор</div><h1>GPU-инфраструктура для корпоративных задач</h1></div>
       <p>Выберите задачи и профиль нагрузки. Калькулятор проверит возможности моделей, предложит оборудование и сравнит аренду с покупкой.</p>
     </div>
     <div className="workspace-grid">
@@ -106,7 +106,7 @@ export default function CalculatorPage(){
           {detailTab==="alternatives"?<div className="alternative-list">{result.alternatives.length?result.alternatives.map(item=><div className="alternative" key={item.model.id}><b>{item.model.name}</b><span>{item.gpu.name} · {item.model.minGpuCount} GPU · {item.model.evidence}</span><strong>{formatRub(item.hourlyInfrastructureRub)}/ч</strong></div>):<p className="task-desc">Нет модели, удовлетворяющей всем правилам. Измените требования на странице параметров.</p>}</div>:detailTab==="costs"?<div className="breakdown-list">{Object.entries(result.buy).filter(([k])=>k!=="total").map(([key,value])=><div className="breakdown-row" key={key}><span>{costLabels[key]}</span><b>{key==="residual"&&value>0?"− ":""}{compactRub(value)}</b></div>)}</div>:<div className="alternative-list">{Object.entries(result.rejectedReasons).slice(0,8).map(([id,reasons])=>{const rejected=config.models.find(m=>m.id===id);return <div className="alternative" key={id}><b>{rejected?.name??id}</b><span>{reasons.join("; ")}</span></div>})}</div>}
         </div></div>
 
-        <div className="management-note"><b>Управленческий вывод</b><p>{result.decision==="buy"?`При заданной загрузке собственная платформа дешевле аренды на горизонте ${years} лет. До закупки требуется подтвердить цены коммерческими предложениями и провести нагрузочное испытание на задачах «ЕвроХима».`:`При заданной загрузке аренда снижает финансовый риск. Покупка становится рациональной примерно от ${result.breakEvenHoursMonth?Math.round(result.breakEvenHoursMonth):"расчётного"} часов в месяц либо при обязательном закрытом контуре данных.`}</p></div>
+        <div className="management-note"><b>Управленческий вывод</b><p>{result.decision==="buy"?`При заданной загрузке собственная платформа дешевле аренды на горизонте ${years} лет. До закупки требуется подтвердить цены коммерческими предложениями и провести нагрузочное испытание на целевых задачах.`:`При заданной загрузке аренда снижает финансовый риск. Покупка становится рациональной примерно от ${result.breakEvenHoursMonth?Math.round(result.breakEvenHoursMonth):"расчётного"} часов в месяц либо при обязательном закрытом контуре данных.`}</p></div>
       </aside>
     </div>
     <footer className="footer-note"><span>Предварительная инвестиционная модель. Значения с пометкой «оценка» требуется заменить данными коммерческих предложений.</span><span>Редакция параметров: {new Date(config.updatedAt).toLocaleDateString("ru-RU")}</span></footer>

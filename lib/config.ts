@@ -83,7 +83,7 @@ export type AppConfig = {
   tasks: TaskRule[];
 };
 
-export const STORAGE_KEY = "eurochem-gpu-calculator:settings:v1";
+export const STORAGE_KEY = "gpu-calculator:settings:v1";
 
 export const DEFAULT_CONFIG: AppConfig = {
   schemaVersion: 1,

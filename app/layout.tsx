@@ -3,7 +3,7 @@ import "./globals.css";
 import { AppHeader } from "@/components/app-header";
 
 export const metadata: Metadata = {
-  title: {default:"Калькулятор GPU-инфраструктуры",template:"%s · GPU-калькулятор ЕвроХим"},
+  title: {default:"Калькулятор GPU-инфраструктуры",template:"%s · GPU-калькулятор"},
   description:"Подбор моделей, GPU и сравнение стоимости аренды и покупки для корпоративных задач ИИ"
 };
 
