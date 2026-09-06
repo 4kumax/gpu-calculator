@@ -3,6 +3,8 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileJson, Save, Settings2 } from "lucide-react";
 import { useConfig } from "@/hooks/use-config";
+import { useTaskSelection } from "@/hooks/use-task-selection";
+import { calculationDefaults, withCalculationDefaults } from "@/lib/scenarios";
 import { AppConfig, cloneDefaultConfig, parseConfig } from "@/lib/config";
 import {
   clearDraft,
@@ -36,7 +38,7 @@ type Section =
 const SECTIONS: Record<Section, { title: string; description: string }> = {
   scenarios: {
     title: "Сценарии",
-    description: "Готовые бизнес-задачи и все исходные параметры расчёта",
+    description: "Выбор сценариев использования и общие параметры расчёта",
   },
   models: {
     title: "Модели",
@@ -93,6 +95,14 @@ function downloadRaw(raw: string, name: string): string | null {
 export default function SettingsPage() {
   const store = useConfig();
   const live = store.config;
+  const taskSelection = useTaskSelection(
+    live,
+    store.loaded &&
+      store.status !== "authentication-required" &&
+      store.status !== "error",
+  );
+  const [selectionDraft, setSelectionDraft] = useState<string[] | null>(null);
+  const selectedTaskIds = selectionDraft ?? taskSelection.taskIds;
   const [draft, setDraft] = useState<AppConfig>(cloneDefaultConfig);
   const [base, setBase] = useState<AppConfig>(cloneDefaultConfig);
   const [baseRevision, setBaseRevision] = useState(live.revision);
@@ -111,8 +121,12 @@ export default function SettingsPage() {
   const currentRevision =
     store.mode === "shared" ? store.sharedRevision : live.revision;
   const dirty = useMemo(
-    () => configDifferences(base, draft).length > 0,
-    [base, draft],
+    () =>
+      configDifferences(base, draft).length > 0 ||
+      (selectionDraft !== null &&
+        JSON.stringify(selectionDraft) !==
+          JSON.stringify(taskSelection.taskIds)),
+    [base, draft, selectionDraft, taskSelection.taskIds],
   );
   const conflict =
     initialized &&
@@ -128,7 +142,7 @@ export default function SettingsPage() {
     store.sharedRevision === 0;
 
   useEffect(() => {
-    if (!store.loaded || initialized) return;
+    if (!store.loaded || !taskSelection.loaded || initialized) return;
     let restored: ReturnType<typeof readDraft> = { draft: null, error: null };
     try {
       restored = readDraft(window.sessionStorage);
@@ -138,6 +152,7 @@ export default function SettingsPage() {
     }
     if (restored.draft) {
       setDraft(restored.draft.config);
+      setSelectionDraft(calculationDefaults(restored.draft.config).taskIds);
       setBase(restored.draft.baseConfig);
       setBaseRevision(
         restored.draft.baseRevision ?? restored.draft.baseConfig.revision,
@@ -155,7 +170,14 @@ export default function SettingsPage() {
     setDraftError(restored.error);
     setDraftRecovery(restored.recoveryRaw ?? null);
     setInitialized(true);
-  }, [store.loaded, initialized, live, currentRevision, store.mode]);
+  }, [
+    store.loaded,
+    taskSelection.loaded,
+    initialized,
+    live,
+    currentRevision,
+    store.mode,
+  ]);
 
   useEffect(() => {
     if (!initialized || busy || dirty || !conflict) return;
@@ -170,7 +192,9 @@ export default function SettingsPage() {
     try {
       const error = dirty
         ? saveDraft(window.sessionStorage, {
-            config: draft,
+            config: withCalculationDefaults(draft, {
+              taskIds: selectedTaskIds,
+            }),
             baseConfig: base,
             baseRevision,
             mode: draftMode,
@@ -183,7 +207,16 @@ export default function SettingsPage() {
         "Не удалось сохранить черновик в браузере. Экспортируйте JSON перед переходом на другую страницу.",
       );
     }
-  }, [initialized, dirty, draft, base, baseRevision, draftMode, draftRecovery]);
+  }, [
+    initialized,
+    dirty,
+    draft,
+    base,
+    baseRevision,
+    draftMode,
+    draftRecovery,
+    selectedTaskIds,
+  ]);
 
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => {
@@ -214,6 +247,7 @@ export default function SettingsPage() {
     }
   };
   const loadLive = () => {
+    setSelectionDraft(null);
     setDraft(live);
     setBase(live);
     setBaseRevision(currentRevision);
@@ -233,7 +267,13 @@ export default function SettingsPage() {
   };
   const handleSave = async () => {
     if (conflict || readOnly) return;
-    const checked = parseConfig(draft);
+    if (taskSelection.error) {
+      setErrors([taskSelection.error]);
+      return;
+    }
+    const checked = parseConfig(
+      withCalculationDefaults(draft, { taskIds: selectedTaskIds }),
+    );
     if (!checked.config) {
       setErrors(checked.errors);
       setMessage("");
@@ -261,6 +301,13 @@ export default function SettingsPage() {
       setBaseRevision(result.config.revision);
       setDraftMode(store.mode);
       setChangeMessage("");
+      if (!taskSelection.setTaskIds(selectedTaskIds)) {
+        setErrors([
+          "Каталог сохранён, но общий выбор сценариев не записан в браузере. Правки выбора оставлены в черновике; проверьте доступ к хранилищу и повторите сохранение.",
+        ]);
+        return;
+      }
+      setSelectionDraft(null);
       setMessage(
         `Ревизия ${result.config.revision} сохранена ${store.mode === "shared" ? "в общем каталоге" : "в этом браузере"}. ${result.warnings.length ? result.warnings.join(" ") : "Калькулятор использует новые параметры."}`,
       );
@@ -391,6 +438,32 @@ export default function SettingsPage() {
           )}
         </section>
       )}
+      {taskSelection.error && (
+        <div className="error-box" role="alert">
+          <p>{taskSelection.error}</p>
+          {taskSelection.recoveryRaw && (
+            <div className="action-row">
+              <button
+                className="button"
+                onClick={() =>
+                  exportRaw(
+                    taskSelection.recoveryRaw!,
+                    "gpu-task-selection-recovery.json",
+                  )
+                }
+              >
+                Скачать исходный выбор
+              </button>
+              <button
+                className="button"
+                onClick={() => taskSelection.recoverTaskIds(selectedTaskIds)}
+              >
+                Сохранить копию и восстановить выбор
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {store.error && (
         <div className="error-box" role="alert">
           <p>{store.error}</p>
@@ -447,7 +520,14 @@ export default function SettingsPage() {
           <button
             className="button"
             onClick={() =>
-              exportRaw(JSON.stringify(draft, null, 2), "gpu-draft.json")
+              exportRaw(
+                JSON.stringify(
+                  withCalculationDefaults(draft, { taskIds: selectedTaskIds }),
+                  null,
+                  2,
+                ),
+                "gpu-draft.json",
+              )
             }
           >
             Экспортировать текущий черновик
@@ -494,7 +574,13 @@ export default function SettingsPage() {
                   className="button"
                   onClick={() =>
                     exportRaw(
-                      JSON.stringify(draft, null, 2),
+                      JSON.stringify(
+                        withCalculationDefaults(draft, {
+                          taskIds: selectedTaskIds,
+                        }),
+                        null,
+                        2,
+                      ),
                       `gpu-calculator-draft-r${baseRevision}.json`,
                     )
                   }
@@ -603,6 +689,9 @@ export default function SettingsPage() {
                     disabled={readOnly}
                     onClick={() => {
                       setDraft(pending.config);
+                      setSelectionDraft(
+                        calculationDefaults(pending.config).taskIds,
+                      );
                       setChangeMessage(pending.title);
                       setPending(null);
                       setMessage(
@@ -625,7 +714,12 @@ export default function SettingsPage() {
                 aria-label={SECTIONS[section].title}
               >
                 {section === "scenarios" && (
-                  <ScenarioPresetsEditor config={draft} onChange={setDraft} />
+                  <ScenarioPresetsEditor
+                    config={draft}
+                    onChange={setDraft}
+                    selectedTaskIds={selectedTaskIds}
+                    onTaskSelectionChange={setSelectionDraft}
+                  />
                 )}
                 {section === "models" && (
                   <ModelsEditor config={draft} onChange={setDraft} />

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cloneDefaultConfig, parseConfig, validateConfig } from "./config";
+import {
+  cloneDefaultConfig,
+  createBusinessScenarioPresets,
+  parseConfig,
+  validateConfig,
+} from "./config";
 
 const plain = (): Record<string, any> =>
   JSON.parse(JSON.stringify(cloneDefaultConfig()));
@@ -301,8 +306,8 @@ test("schema-3 migration adds explicit business workloads without changing exist
   assert.equal(result.config.assumptions.defaultHoursMonth, 217);
   assert.deepEqual(result.config.models, legacy.models);
   assert.deepEqual(result.config.deploymentProfiles, legacy.deploymentProfiles);
-  assert.equal(result.config.scenarioPresets.length, 4);
-  assert.equal(result.config.defaultScenarioId, "pilot");
+  assert.equal(result.config.scenarioPresets.length, 1);
+  assert.equal(result.config.defaultScenarioId, "calculation-defaults");
   assert.ok(
     result.config.scenarioPresets.every(
       (preset) =>
@@ -360,7 +365,7 @@ test("business scenario validation rejects missing workloads and invalid referen
     [
       "scenarioPresets[1].id",
       (config) => {
-        config.scenarioPresets[1].id = config.scenarioPresets[0].id;
+        config.scenarioPresets.push(structuredClone(config.scenarioPresets[0]));
       },
     ],
   ];
@@ -415,4 +420,48 @@ test("migration corrects only the unmodified built-in Kimi weight assumption", (
       ?.checkpointWeightGb,
     undefined,
   );
+});
+
+test("fresh defaults retain the original combined corporate scenarios and workload", () => {
+  const config = cloneDefaultConfig();
+  const preset = config.scenarioPresets.find(
+    (item) => item.id === config.defaultScenarioId,
+  )!;
+  assert.equal(config.tasks.length, 12);
+  assert.deepEqual(preset.input.taskIds, [
+    "contracts",
+    "estimates",
+    "incidents",
+    "agents",
+  ]);
+  assert.equal(preset.input.concurrency, 8);
+  assert.equal(preset.input.hoursMonth, 360);
+  assert.equal(preset.input.years, 3);
+  assert.equal(preset.input.priority, "balance");
+});
+
+test("untouched generated group defaults are retired without deleting records or user edits", () => {
+  const old = cloneDefaultConfig();
+  old.scenarioPresets = createBusinessScenarioPresets(old.tasks);
+  old.defaultScenarioId = "pilot";
+  const original = structuredClone(old);
+  const normalized = parseConfig(old);
+  assert.ok(normalized.config);
+  assert.equal(normalized.config.defaultScenarioId, "calculation-defaults");
+  assert.deepEqual(
+    normalized.config.scenarioPresets.slice(0, 4),
+    old.scenarioPresets,
+  );
+  assert.deepEqual(normalized.config.gpus, old.gpus);
+  assert.deepEqual(old, original);
+  assert.ok(normalized.warnings.length);
+  assert.deepEqual(
+    parseConfig(old, { preserveCalculationDefaults: true }).config,
+    old,
+    "immutable snapshots retain their own default records",
+  );
+  old.scenarioPresets[0].input.hoursMonth = 217;
+  const edited = parseConfig(old);
+  assert.equal(edited.config?.defaultScenarioId, "pilot");
+  assert.equal(edited.config?.scenarioPresets[0].input.hoursMonth, 217);
 });

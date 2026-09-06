@@ -443,7 +443,7 @@ test("calculator result distinguishes equal costs from a buy advantage at every 
   assert.equal(ui.screen.queryByText("не достигается", { exact: true }), null);
 });
 
-test("calculator page opens business presets and restores the selected preset across route remounts", async () => {
+test("calculator page restores multiple selected tasks across route remounts", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     Response.json({ configured: false, authenticated: false, role: null });
@@ -452,17 +452,36 @@ test("calculator page opens business presets and restores the selected preset ac
     const first = ui.render(createElement(CalculatorPage));
     await ui.screen.findByRole("heading", { name: "ИИ для вашего бизнеса" });
     assert.equal(ui.screen.queryByRole("spinbutton"), null);
-    const preset = ui.screen.getByRole("button", {
-      name: /Корпоративный масштаб/,
-    });
-    ui.fireEvent.click(preset);
-    assert.equal(preset.getAttribute("aria-pressed"), "true");
+    ui.fireEvent.click(ui.screen.getByRole("button", { name: "Снять выбор" }));
+    const titles = [
+      "Договоры и закупки",
+      "Сметы, КС-2 и комплекты документов",
+      "Технические инциденты",
+    ];
+    for (const title of titles) {
+      const task = ui.screen.getByRole("checkbox", {
+        name: title,
+      }) as HTMLInputElement;
+      ui.fireEvent.click(task);
+      assert.equal(task.checked, true);
+    }
     first.unmount();
     ui.render(createElement(CalculatorPage));
-    const restored = await ui.screen.findByRole("button", {
-      name: /Корпоративный масштаб/,
-    });
-    assert.equal(restored.getAttribute("aria-pressed"), "true");
+    await ui.screen.findByRole("checkbox", { name: titles[0] });
+    for (const title of titles)
+      assert.equal(
+        (ui.screen.getByRole("checkbox", { name: title }) as HTMLInputElement)
+          .checked,
+        true,
+      );
+    assert.equal(
+      (
+        ui.screen.getByRole("checkbox", {
+          name: "Корпоративный поиск и ответы",
+        }) as HTMLInputElement
+      ).checked,
+      false,
+    );
     assert.ok(ui.screen.getByRole("heading", { name: "Сравнение вариантов" }));
   } finally {
     globalThis.fetch = originalFetch;

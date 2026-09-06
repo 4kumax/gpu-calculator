@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculate, CalculationInput } from "./calculator";
+import { calculate, CalculationInput, evaluateModels } from "./calculator";
 import { compareDeployments } from "./comparison";
 import { cloneDefaultConfig } from "./config";
+import { calculationDefaults } from "./scenarios";
 
 const input: CalculationInput = {
   taskIds: ["search"],
@@ -96,4 +97,79 @@ test("uncalculable GPU rows stay visible and do not crash usable alternatives", 
   assert.equal(broken.status, "unsupported");
   assert.match(broken.reasons.join(" "), /Workspace/);
   assert.ok(comparison.recommended?.result);
+});
+
+test("empty tasks preserve inspectable costs without inventing an automatic recommendation", () => {
+  const config = cloneDefaultConfig();
+  const comparison = compareDeployments(config, { ...input, taskIds: [] });
+  assert.equal(comparison.recommended, null);
+  assert.ok(comparison.rows.some((row) => row.result));
+  assert.equal(
+    comparison.rows.length,
+    config.models.filter((model) => model.enabled).length *
+      config.gpus.filter((gpu) => gpu.enabled).length,
+  );
+  assert.doesNotThrow(
+    () => calculate(config, { ...input, taskIds: [] }),
+    "the lower-level numerical calculator still accepts an empty technical requirement",
+  );
+});
+
+test("the original four business tasks determine eligibility and keep class-four agent requirements", () => {
+  const config = cloneDefaultConfig();
+  const originalTasks = ["contracts", "estimates", "incidents", "agents"];
+  const defaults = calculationDefaults(config);
+  assert.deepEqual(defaults.taskIds, originalTasks);
+  assert.equal(defaults.inputTokens, 8192);
+  const evaluation = evaluateModels(config, originalTasks);
+  const comparison = compareDeployments(config, defaults);
+  assert.equal(evaluation.req.qualityTier, 4);
+  assert.ok(evaluation.req.capabilities.includes("агенты"));
+  assert.ok(comparison.recommended);
+  assert.ok(comparison.recommended.model.qualityTier >= 4);
+  assert.ok(comparison.recommended.result?.selectionValid);
+  assert.ok(
+    evaluation.eligible.some(
+      (model) => model.id === comparison.recommended?.model.id,
+    ),
+  );
+  assert.ok(
+    comparison.rows
+      .filter((row) => row.model.name.startsWith("Llama"))
+      .every((row) => !row.eligible),
+  );
+});
+
+test("adding the actual frontier task recommends Kimi instead of retaining a cheaper prior model", () => {
+  const config = cloneDefaultConfig();
+  const originalTasks = ["contracts", "estimates", "incidents", "agents"];
+  const initial = compareDeployments(config, {
+    ...input,
+    taskIds: originalTasks,
+    priority: "balance",
+  });
+  assert.notEqual(initial.recommended?.model.id, "kimi-k3");
+  for (const priority of ["cost", "balance", "quality"] as const) {
+    const comparison = compareDeployments(config, {
+      ...input,
+      taskIds: [...originalTasks, "frontier"],
+      // Matrix recommendations use the current task set even if the caller still
+      // carries a former manual model while resetting the visible selection.
+      modelId: initial.recommended!.model.id,
+      priority,
+    });
+    assert.equal(comparison.recommended?.model.id, "kimi-k3", priority);
+    assert.equal(comparison.recommended?.gpu.id, "gb300", priority);
+    assert.equal(comparison.recommended?.result?.gpuCount, 8);
+    assert.ok(
+      comparison.rows
+        .filter((row) => row.model.name.startsWith("Llama"))
+        .every((row) => !row.eligible),
+    );
+    assert.ok(
+      comparison.modelRows.find(
+        (row) => row.model.id === initial.recommended?.model.id,
+      )?.reasons.length,
+    );
+  }
 });

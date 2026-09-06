@@ -1457,6 +1457,75 @@ export function createBusinessScenarioPresets(
   }));
 }
 
+export function createCalculationDefaultsPreset(
+  tasks: TaskRule[],
+  assumptions: Pick<
+    Assumptions,
+    "defaultHoursMonth" | "defaultYears" | "defaultConcurrency"
+  >,
+): BusinessScenarioPreset {
+  const enabled = new Set(
+    tasks.filter((task) => task.enabled).map((task) => task.id),
+  );
+  return {
+    id: "calculation-defaults",
+    enabled: true,
+    title: "Параметры расчёта",
+    description: "Общие параметры для выбранных сценариев использования.",
+    input: {
+      taskIds: ["contracts", "estimates", "incidents", "agents"].filter((id) =>
+        enabled.has(id),
+      ),
+      modelId: "auto",
+      gpuId: "auto",
+      hoursMonth: assumptions.defaultHoursMonth,
+      years: assumptions.defaultYears,
+      concurrency: assumptions.defaultConcurrency,
+      reserveMode: "none",
+      largeModelSharePct: 100,
+      priority: "balance",
+      inputTokens: 8192,
+      outputTokens: 1024,
+      targetTtftMs: 0,
+      minTokensPerSecond: 0,
+      rentalMode: "gpu-hour",
+      reserveRentalMode: "always-on",
+    },
+  };
+}
+
+/** Keep the abandoned preset records intact; replace only an untouched generated active default. */
+function normalizeGeneratedCalculationDefaults(config: AppConfig): boolean {
+  const active = config.scenarioPresets.find(
+    (preset) => preset.id === config.defaultScenarioId,
+  );
+  if (!active) return false;
+  const former = createBusinessScenarioPresets(config.tasks).find(
+    (preset) => preset.id === active.id,
+  );
+  if (
+    !former ||
+    former.enabled !== active.enabled ||
+    former.title !== active.title ||
+    former.description !== active.description ||
+    !Object.entries(former.input).every(
+      ([key, value]) =>
+        JSON.stringify(value) ===
+        JSON.stringify(active.input[key as keyof ScenarioInput]),
+    )
+  )
+    return false;
+  const replacement = createCalculationDefaultsPreset(
+    config.tasks,
+    config.assumptions,
+  );
+  while (config.scenarioPresets.some((preset) => preset.id === replacement.id))
+    replacement.id += "-restored";
+  config.scenarioPresets.push(replacement);
+  config.defaultScenarioId = replacement.id;
+  return true;
+}
+
 function migrateV2(legacy: LegacyAppConfig): AppConfig {
   return {
     ...legacy,
@@ -1466,8 +1535,10 @@ function migrateV2(legacy: LegacyAppConfig): AppConfig {
       defaultInputTokens: 8192,
       defaultOutputTokens: 1024,
     },
-    scenarioPresets: createBusinessScenarioPresets(legacy.tasks),
-    defaultScenarioId: "pilot",
+    scenarioPresets: [
+      createCalculationDefaultsPreset(legacy.tasks, legacy.assumptions),
+    ],
+    defaultScenarioId: "calculation-defaults",
     catalogVersion: `${legacy.updatedAt.slice(0, 10)}.legacy-v2`,
     gpus: legacy.gpus.map((gpu) => ({
       ...gpu,
@@ -1500,7 +1571,7 @@ function migrateV2(legacy: LegacyAppConfig): AppConfig {
 
 export const DEFAULT_CONFIG: AppConfig = {
   ...migrateV2(LEGACY_DEFAULT_CONFIG),
-  catalogVersion: "2026-09-06.2",
+  catalogVersion: "2026-09-06.3",
   updatedAt: "2026-09-06T00:00:00.000Z",
 };
 
@@ -2012,7 +2083,10 @@ export type ParseConfigResult = {
   errors: string[];
   warnings: string[];
 };
-export function parseConfig(value: unknown): ParseConfigResult {
+export function parseConfig(
+  value: unknown,
+  options: { preserveCalculationDefaults?: boolean } = {},
+): ParseConfigResult {
   const version =
     object(value) && (value.schemaVersion === 2 || value.schemaVersion === 3)
       ? value.schemaVersion
@@ -2032,10 +2106,16 @@ export function parseConfig(value: unknown): ParseConfigResult {
               defaultInputTokens: 8192,
               defaultOutputTokens: 1024,
             },
-            scenarioPresets: createBusinessScenarioPresets(cloned.tasks),
-            defaultScenarioId: "pilot",
+            scenarioPresets: [
+              createCalculationDefaultsPreset(cloned.tasks, cloned.assumptions),
+            ],
+            defaultScenarioId: "calculation-defaults",
           }
         : (cloned as AppConfig);
+  const restoredTaskDefaults =
+    version === 4 &&
+    !options.preserveCalculationDefaults &&
+    normalizeGeneratedCalculationDefaults(config);
   const correctedBuiltinKimi =
     version < 4 &&
     config.models.some((model) => {
@@ -2063,7 +2143,7 @@ export function parseConfig(value: unknown): ParseConfigResult {
     warnings:
       version < 4
         ? [
-            `Каталог v${version} перенесён в v4 с сохранением цен и характеристик. Добавлены четыре редактируемых бизнес-сценария. Нагрузка по умолчанию — 8192 токена входа и 1024 ответа; требования задач к максимальному контексту больше не задают фактическую длину запроса.`,
+            `Каталог v${version} перенесён в v4 с сохранением цен и характеристик. Сохранены исходные сценарии использования и добавлены общие редактируемые параметры расчёта. Нагрузка по умолчанию — 8192 токена входа и 1024 ответа; требования задач к максимальному контексту больше не задают фактическую длину запроса.`,
             ...(correctedBuiltinKimi
               ? [
                   "Размер неизменённого встроенного Kimi K3 уточнён до 1560,860 ГБ по официальному индексу чекпоинта. Пользовательские размеры, форматы и источники сохранены.",
@@ -2075,6 +2155,10 @@ export function parseConfig(value: unknown): ParseConfigResult {
                 ]
               : []),
           ]
-        : [],
+        : restoredTaskDefaults
+          ? [
+              "Восстановлен выбор исходных сценариев использования. Прежние автоматически созданные группы сохранены в каталоге; пользовательские параметры не изменены.",
+            ]
+          : [],
   };
 }

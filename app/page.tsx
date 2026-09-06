@@ -4,53 +4,64 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowUpRight,
-  Check,
   ChevronDown,
   Download,
   FolderOpen,
   SlidersHorizontal,
 } from "lucide-react";
 import { useConfig } from "@/hooks/use-config";
+import { useTaskSelection } from "@/hooks/use-task-selection";
 import { compareDeployments, type ComparisonRow } from "@/lib/comparison";
 import { calculate } from "@/lib/calculator";
 import {
+  calculationDefaults,
   createScenario,
   downloadJson,
   parseScenario,
-  scenarioInput,
   scenarioReport,
   type Scenario,
 } from "@/lib/scenarios";
 import { ExecutiveComparison } from "@/components/executive-comparison";
 import { ScenarioManager } from "@/components/scenario-manager";
+import { TaskSelector } from "@/components/task-selector";
 
 const VIEW_STORAGE_KEY = "gpu-calculator:executive-view:v4";
+type SelectedChoice = { id: string; scope: string };
 
 export default function CalculatorPage() {
   const store = useConfig();
-  const [presetId, setPresetId] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const taskSelection = useTaskSelection(
+    store.config,
+    store.loaded &&
+      store.status !== "authentication-required" &&
+      store.status !== "error",
+  );
+  const [choice, setChoice] = useState<SelectedChoice | null>(null);
   const [snapshot, setSnapshot] = useState<Scenario | null>(null);
   const [initialized, setInitialized] = useState(false);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [recovery, setRecovery] = useState<string | null>(null);
   const savedRef = useRef<HTMLDetailsElement>(null);
   const activeConfig = snapshot?.config ?? store.config;
-  const presets = store.config.scenarioPresets.filter(
-    (preset) => preset.enabled,
-  );
-  const activePreset =
-    presets.find((preset) => preset.id === presetId) ??
-    presets.find((preset) => preset.id === store.config.defaultScenarioId) ??
-    presets[0];
   const input = useMemo(
     () =>
-      snapshot?.input ??
-      scenarioInput(
-        store.config,
-        activePreset?.id ?? store.config.defaultScenarioId,
-      ),
-    [snapshot, store.config, activePreset?.id],
+      snapshot?.input ?? {
+        ...calculationDefaults(store.config),
+        taskIds: taskSelection.taskIds,
+      },
+    [snapshot, store.config, taskSelection.taskIds],
+  );
+  // A manual comparison belongs to one exact task set, workload and catalogue.
+  // Changing those inputs must never keep a previously suitable model selected.
+  const scope = useMemo(
+    () =>
+      JSON.stringify({
+        input: { ...input, taskIds: [...input.taskIds].sort() },
+        config: activeConfig,
+        snapshotId: snapshot?.id,
+      }),
+    [input, activeConfig, snapshot?.id],
   );
 
   useEffect(() => {
@@ -68,8 +79,11 @@ export default function CalculatorPage() {
         if (!value || typeof value !== "object" || Array.isArray(value))
           throw new Error("Не удалось прочитать сохранённый выбор.");
         const data = value as Record<string, unknown>;
-        if (typeof data.presetId === "string") setPresetId(data.presetId);
-        if (typeof data.selectedId === "string") setSelectedId(data.selectedId);
+        if (
+          typeof data.selectedId === "string" &&
+          typeof data.selectionScope === "string"
+        )
+          setChoice({ id: data.selectedId, scope: data.selectionScope });
         if (data.snapshot) {
           const parsed = parseScenario(data.snapshot);
           if (!parsed.value) throw new Error(parsed.errors.join(" "));
@@ -90,26 +104,79 @@ export default function CalculatorPage() {
   useEffect(() => {
     if (
       !initialized ||
+      !taskSelection.loaded ||
+      taskSelection.error ||
+      !snapshot ||
+      JSON.stringify([...snapshot.input.taskIds].sort()) ===
+        JSON.stringify([...taskSelection.taskIds].sort())
+    )
+      return;
+    setSnapshot(null);
+    setChoice(null);
+    setMessage(
+      "Выбор задач изменён. Расчёт использует текущие параметры; сохранённый вариант остался без изменений.",
+    );
+  }, [
+    initialized,
+    taskSelection.loaded,
+    taskSelection.error,
+    taskSelection.taskIds,
+    snapshot,
+  ]);
+
+  useEffect(() => {
+    if (
+      !initialized ||
+      !taskSelection.loaded ||
+      taskSelection.error ||
       recovery ||
       store.status === "error" ||
       store.status === "authentication-required"
     )
       return;
     try {
+      const activeChoice = choice?.scope === scope ? choice : null;
       localStorage.setItem(
         VIEW_STORAGE_KEY,
-        JSON.stringify({ presetId, selectedId, snapshot }),
+        JSON.stringify({
+          selectedId: activeChoice?.id ?? null,
+          selectionScope: activeChoice?.scope ?? null,
+          snapshot,
+        }),
       );
     } catch {
       setError(
         "Выбор не удалось сохранить в браузере. Экспортируйте расчёт, чтобы сохранить его.",
       );
     }
-  }, [initialized, presetId, selectedId, snapshot, recovery, store.status]);
+  }, [
+    initialized,
+    taskSelection.loaded,
+    taskSelection.error,
+    choice,
+    scope,
+    snapshot,
+    recovery,
+    store.status,
+  ]);
 
   const calculation = useMemo(() => {
+    if (!input.taskIds.length)
+      return { comparison: null, preferred: null, error: "" };
     try {
       const matrix = compareDeployments(activeConfig, input);
+      for (const [kind, id, items] of [
+        ["Модель", input.modelId, activeConfig.models],
+        ["GPU", input.gpuId, activeConfig.gpus],
+      ] as const) {
+        if (
+          id !== "auto" &&
+          !items.some((item) => item.enabled && item.id === id)
+        )
+          throw new Error(
+            `${kind} «${id}» из параметров расчёта недоступна. Выберите доступный вариант или автоматический подбор в Параметрах.`,
+          );
+      }
       const fixed =
         input.modelId !== "auto" || input.gpuId !== "auto"
           ? calculate(activeConfig, input)
@@ -131,19 +198,37 @@ export default function CalculatorPage() {
   }, [activeConfig, input]);
   const comparison = calculation.comparison;
   const selected =
-    comparison?.rows.find((row) => row.id === selectedId && row.result) ??
+    (choice?.scope === scope
+      ? comparison?.rows.find((row) => row.id === choice.id && row.result)
+      : null) ??
     calculation.preferred ??
     comparison?.recommended ??
-    comparison?.modelRows.find((row) => row.result) ??
     null;
   const finalInput = selected
     ? { ...input, modelId: selected.model.id, gpuId: selected.gpu.id }
     : input;
-  const scenarioName = snapshot?.name ?? activePreset?.title ?? "Расчёт";
-  const choosePreset = (id: string) => {
-    setPresetId(id);
+  const taskTitles = activeConfig.tasks
+    .filter((task) => input.taskIds.includes(task.id))
+    .map((task) => task.title);
+  const scenarioName =
+    snapshot?.name ??
+    (taskTitles.length === 1
+      ? taskTitles[0]
+      : `Расчёт для ${input.taskIds.length} задач`);
+  const changeTasks = (ids: string[]) => {
+    if (!taskSelection.setTaskIds(ids)) return;
+    if (snapshot)
+      setMessage(
+        "Выбор перенесён в текущий каталог. Сохранённый вариант остался без изменений.",
+      );
     setSnapshot(null);
-    setSelectedId(null);
+    setChoice(null);
+  };
+  const loadSnapshot = (scenario: Scenario) => {
+    if (!taskSelection.setTaskIds(scenario.input.taskIds)) return;
+    setSnapshot(scenario);
+    setChoice(null);
+    setMessage("");
   };
   const exportCalculation = () => {
     try {
@@ -165,18 +250,10 @@ export default function CalculatorPage() {
       <main className="executive-shell">
         <div className="empty-state">
           <h1>Общий каталог</h1>
-          <p>Войдите, чтобы открыть сценарии и сравнить варианты.</p>
+          <p>Войдите, чтобы выбрать задачи и сравнить варианты.</p>
           <Link className="button primary" href="/settings">
             Войти в настройках
           </Link>
-        </div>
-      </main>
-    );
-  if (!store.loaded || !initialized)
-    return (
-      <main className="executive-shell">
-        <div className="empty-state" role="status">
-          Загрузка сценариев…
         </div>
       </main>
     );
@@ -190,6 +267,14 @@ export default function CalculatorPage() {
         </div>
       </main>
     );
+  if (!store.loaded || !initialized || !taskSelection.loaded)
+    return (
+      <main className="executive-shell">
+        <div className="empty-state" role="status">
+          Загрузка задач…
+        </div>
+      </main>
+    );
 
   return (
     <main className="executive-shell">
@@ -197,17 +282,19 @@ export default function CalculatorPage() {
         <div>
           <span className="page-kicker">ПЛАНИРОВАНИЕ ИНФРАСТРУКТУРЫ</span>
           <h1>ИИ для вашего бизнеса</h1>
-          <p>Выберите сценарий. Сравните модели, оборудование и стоимость.</p>
+          <p>Выберите задачи. Сравните подходящие модели, GPU и стоимость.</p>
         </div>
         <Link className="settings-shortcut" href="/settings">
           <SlidersHorizontal size={16} />
           Параметры
         </Link>
       </header>
-
-      {error && (
+      {(error || taskSelection.error) && (
         <div className="error-box" role="alert">
-          <p>{error}</p>
+          <p>{error || taskSelection.error}</p>
+          {taskSelection.error && (
+            <Link href="/settings">Восстановить выбор в Параметрах</Link>
+          )}
           {recovery && (
             <div className="action-row">
               <button
@@ -235,9 +322,8 @@ export default function CalculatorPage() {
                     localStorage.removeItem(VIEW_STORAGE_KEY);
                     setRecovery(null);
                     setError("");
-                    setPresetId("");
                     setSnapshot(null);
-                    setSelectedId(null);
+                    setChoice(null);
                   } catch {
                     setError("Не удалось создать резервную копию.");
                   }
@@ -249,66 +335,44 @@ export default function CalculatorPage() {
           )}
         </div>
       )}
-
-      <section
-        className="business-scenarios"
-        aria-labelledby="business-scenarios-title"
-      >
-        <div className="section-eyebrow">
-          <h2 id="business-scenarios-title">Ваш сценарий</h2>
-          <span>Параметры уже заданы</span>
+      {snapshot && (
+        <div className="snapshot-context">
+          <span>
+            Открыт сохранённый вариант «{snapshot.name}» со своими параметрами и
+            ценами.
+          </span>
+          <button
+            className="text-button"
+            onClick={() => changeTasks(snapshot.input.taskIds)}
+          >
+            Продолжить по текущим параметрам
+          </button>
         </div>
-        <div className="preset-grid">
-          {presets.map((preset, index) => {
-            const active = !snapshot && activePreset?.id === preset.id;
-            return (
-              <button
-                key={preset.id}
-                className={`preset-card ${active ? "active" : ""}`}
-                aria-pressed={active}
-                onClick={() => choosePreset(preset.id)}
-              >
-                <span className="preset-top">
-                  <span className="preset-number">0{index + 1}</span>
-                  <span className="preset-check">
-                    {active && <Check size={13} />}
-                  </span>
-                </span>
-                <strong>{preset.title}</strong>
-                <span className="preset-description">{preset.description}</span>
-                <span className="preset-period">
-                  {preset.input.years * 12} месяцев ·{" "}
-                  {preset.input.reserveMode === "nplus1"
-                    ? "с резервом"
-                    : "без резерва"}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
+      )}
+      {message && (
+        <p className="help-text" role="status">
+          {message}
+        </p>
+      )}
+      <TaskSelector
+        tasks={activeConfig.tasks}
+        selectedIds={input.taskIds}
+        onChange={changeTasks}
+      />
       <div className="scenario-context">
         <div>
-          <h2>{scenarioName}</h2>
+          <h2>
+            {snapshot
+              ? snapshot.name
+              : `Выбрано задач: ${input.taskIds.length}`}
+          </h2>
           <span>
             {snapshot
               ? "Сохранённые параметры и цены"
-              : "Все варианты рассчитаны на одинаковой нагрузке"}
+              : `Единый расчёт · ${input.years * 12} месяцев · модель должна подходить для всех задач`}
           </span>
         </div>
         <div className="context-actions">
-          {snapshot && (
-            <button
-              className="text-button"
-              onClick={() => {
-                setSnapshot(null);
-                setSelectedId(null);
-              }}
-            >
-              К текущим сценариям
-            </button>
-          )}
           <button
             className="text-button"
             disabled={!selected?.result}
@@ -335,22 +399,29 @@ export default function CalculatorPage() {
           </button>
         </div>
       </div>
-
-      {comparison ? (
+      {!input.taskIds.length ? (
+        <div className="empty-state task-empty">
+          <h2>Выберите задачи для сравнения</h2>
+          <p>
+            Подбор модели и расчёт стоимости появятся после выбора хотя бы одной
+            задачи.
+          </p>
+        </div>
+      ) : comparison ? (
         <ExecutiveComparison
+          key={scope}
           config={activeConfig}
           input={input}
           comparison={comparison}
           selected={selected}
-          onSelect={(row: ComparisonRow) => setSelectedId(row.id)}
+          onSelect={(row: ComparisonRow) => setChoice({ id: row.id, scope })}
         />
       ) : (
         <div className="error-box" role="alert">
           <p>{calculation.error}</p>
-          <Link href="/settings">Проверить параметры сценария</Link>
+          <Link href="/settings">Проверить параметры расчёта</Link>
         </div>
       )}
-
       <details className="saved-workspace quiet-details" ref={savedRef}>
         <summary>
           Сохранённые варианты и сравнение сценариев <ChevronDown size={16} />
@@ -359,14 +430,10 @@ export default function CalculatorPage() {
           config={activeConfig}
           input={finalInput}
           defaultName={scenarioName}
-          onLoad={(scenario) => {
-            setSnapshot(scenario);
-            setSelectedId(null);
-          }}
+          onLoad={loadSnapshot}
           disabled={!selected?.result}
         />
       </details>
-
       {!!store.warnings.length && (
         <details className="catalog-notes quiet-details">
           <summary>

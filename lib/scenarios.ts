@@ -1,5 +1,5 @@
 import { calculate, type CalculationInput } from "./calculator";
-import { parseConfig, type AppConfig } from "./config";
+import { parseConfig, type AppConfig, type ScenarioInput } from "./config";
 
 export const CALCULATOR_VERSION = "4.0.0";
 export const INPUT_STORAGE_KEY = "gpu-calculator:input:v1";
@@ -49,8 +49,26 @@ export function scenarioInput(
   return JSON.parse(JSON.stringify(preset.input)) as CalculationInput;
 }
 
+export function calculationDefaults(config: AppConfig): ScenarioInput {
+  return scenarioInput(config, config.defaultScenarioId) as ScenarioInput;
+}
+
+export function withCalculationDefaults(
+  config: AppConfig,
+  patch: Partial<ScenarioInput>,
+): AppConfig {
+  return {
+    ...config,
+    scenarioPresets: config.scenarioPresets.map((preset) =>
+      preset.id === config.defaultScenarioId
+        ? { ...preset, input: { ...preset.input, ...patch } }
+        : preset,
+    ),
+  };
+}
+
 export function defaultInput(config: AppConfig): CalculationInput {
-  return scenarioInput(config, config.defaultScenarioId);
+  return calculationDefaults(config);
 }
 
 export function parseInput(value: unknown): ParseResult<CalculationInput> {
@@ -242,7 +260,9 @@ export function parseScenario(value: unknown): ParseResult<Scenario> {
     errors.push("Некорректное название сценария.");
   if (!calculationDate(value.createdAt))
     errors.push("Некорректная дата сценария.");
-  const config = parseConfig(value.config);
+  const config = parseConfig(value.config, {
+    preserveCalculationDefaults: true,
+  });
   const input = parseInput(value.input);
   errors.push(...config.errors, ...input.errors);
   if (errors.length || !config.config || !input.value)

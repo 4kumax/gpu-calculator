@@ -111,6 +111,10 @@ export function compareDeployments(
   return {
     rows,
     modelRows,
-    recommended: modelRows.find((row) => row.eligible) ?? null,
+    // Costs can be inspected without tasks, but there is no business requirement
+    // against which an automatic recommendation could be justified.
+    recommended: input.taskIds.length
+      ? (modelRows.find((row) => row.eligible) ?? null)
+      : null,
   };
 }

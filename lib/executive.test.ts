@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test, { after, afterEach, before } from "node:test";
-import { createElement } from "react";
+import { createElement, useState, type MouseEvent } from "react";
 import { JSDOM } from "jsdom";
 import { calculate, compactRub, formatRub } from "./calculator";
 import { compareDeployments, type ComparisonRow } from "./comparison";
 import { cloneDefaultConfig, STORAGE_KEY, type AppConfig } from "./config";
+import { TASK_SELECTION_KEY } from "./task-selection";
 import {
   createScenario,
   scenarioInput,
@@ -14,6 +15,7 @@ import {
 let dom: JSDOM;
 let ui: typeof import("@testing-library/react");
 let CalculatorPage: typeof import("../app/page").default;
+let SettingsPage: typeof import("../app/settings/page").default;
 const originalFetch = globalThis.fetch;
 const money = (value: number) => compactRub(value).replace(/\.([0-9])/g, ",$1");
 
@@ -46,10 +48,13 @@ before(async () => {
   dom.window.HTMLElement.prototype.scrollIntoView = () => undefined;
   ui = await import("@testing-library/react");
   ({ default: CalculatorPage } = await import("../app/page"));
+  ({ default: SettingsPage } = await import("../app/settings/page"));
 });
 afterEach(() => {
   ui.cleanup();
   dom.window.localStorage.clear();
+  dom.window.sessionStorage.clear();
+  dom.window.history.replaceState(null, "", "/");
   globalThis.fetch = originalFetch;
 });
 after(() => {
@@ -77,26 +82,69 @@ function chooseButton(row: ComparisonRow, chosen = false): HTMLButtonElement {
     name: `${chosen ? "Выбран" : "Выбрать"} ${row.model.name}, ${row.gpu.name}`,
   }) as HTMLButtonElement;
 }
-
-test("главная сразу показывает четыре бизнес-сценария и стоимость без технического ввода", async () => {
-  await renderPage();
-  const region = ui.screen.getByRole("region", { name: "Ваш сценарий" });
-  const presets = ui.within(region).getAllByRole("button");
-  assert.equal(presets.length, 4);
-  for (const title of [
-    "Пилот ИИ-ассистента",
-    "Работа с документами",
-    "Аналитика и агенты",
-    "Корпоративный масштаб",
-  ])
-    assert.ok(
-      ui.within(region).getByRole("button", { name: new RegExp(title) }),
+function taskCheckbox(title: string): HTMLInputElement {
+  return ui.screen.getByRole("checkbox", { name: title }) as HTMLInputElement;
+}
+function selectedTasks(config: AppConfig): string[] {
+  return config.tasks
+    .filter((task) => taskCheckbox(task.title).checked)
+    .map((task) => task.id);
+}
+// jsdom cannot load Next routes. Follow the actual page link and mount its real destination.
+function RoutedPages() {
+  const [path, setPath] = useState("/");
+  const navigate = (event: MouseEvent<HTMLDivElement>) => {
+    const link = (event.target as HTMLElement).closest<HTMLAnchorElement>(
+      "a[href]",
     );
-  assert.equal(
-    presets.filter((button) => button.getAttribute("aria-pressed") === "true")
-      .length,
-    1,
+    if (!link || !["/", "/settings"].includes(link.pathname)) return;
+    event.preventDefault();
+    dom.window.history.pushState(null, "", link.pathname);
+    setPath(link.pathname);
+  };
+  return createElement(
+    "div",
+    { onClick: navigate },
+    path === "/"
+      ? createElement(CalculatorPage)
+      : createElement(
+          "div",
+          null,
+          createElement("a", { href: "/" }, "Вернуться к сравнению"),
+          createElement(SettingsPage),
+        ),
   );
+}
+
+test("главная показывает двенадцать исходных задач с множественным выбором без технического ввода", async () => {
+  const config = cloneDefaultConfig();
+  await renderPage(config);
+  const region = ui.screen.getByRole("region", {
+    name: "Сценарии использования",
+  });
+  const choices = ui.within(region).getAllByRole("checkbox");
+  assert.equal(choices.length, 12);
+  for (const title of [
+    "Корпоративный поиск и ответы",
+    "Извлечение и классификация",
+    "Пересказы и отчёты",
+    "Договоры и закупки",
+    "Сметы, КС-2 и комплекты документов",
+    "Управленческая аналитика",
+    "Технические инциденты",
+    "Разработка программных систем",
+    "Документы с изображениями и схемами",
+    "Исследовательские и инженерные агенты",
+    "Сверхдлинный контекст",
+    "Предельные мультимодальные задачи",
+  ])
+    assert.ok(ui.within(region).getByRole("checkbox", { name: title }));
+  assert.deepEqual(
+    selectedTasks(config),
+    scenarioInput(config, config.defaultScenarioId).taskIds,
+  );
+  assert.equal(ui.screen.queryByText("Пилот ИИ-ассистента"), null);
+  assert.equal(ui.screen.queryByText("Корпоративный масштаб"), null);
   assert.equal(ui.screen.queryByRole("spinbutton"), null);
   assert.ok(ui.screen.getByRole("link", { name: "Параметры" }));
   const card = decisionCard();
@@ -105,19 +153,22 @@ test("главная сразу показывает четыре бизнес-�
   assert.match(card.textContent!, /₽/);
 });
 
-test("выбор сценария меняет горизонт, нагрузку и показанные TCO", async () => {
+test("добавление предельной задачи требует Kimi и её снятие восстанавливает прежний подходящий вариант", async () => {
   const config = cloneDefaultConfig();
   await renderPage(config);
+  ui.fireEvent.click(ui.screen.getByRole("button", { name: "Снять выбор" }));
+  ui.fireEvent.click(taskCheckbox("Корпоративный поиск и ответы"));
+  ui.fireEvent.click(taskCheckbox("Договоры и закупки"));
   const previous = decisionCard().textContent;
-  const target = config.scenarioPresets.find(
-    (preset) => preset.id === "enterprise",
-  )!;
-  const input = scenarioInput(config, target.id);
+  const input = {
+    ...scenarioInput(config, config.defaultScenarioId),
+    taskIds: ["search", "contracts", "frontier"],
+  };
   const expected = compareDeployments(config, input).recommended;
   assert.ok(expected?.result);
-  ui.fireEvent.click(
-    ui.screen.getByRole("button", { name: /Корпоративный масштаб/ }),
-  );
+  assert.equal(expected.model.id, "kimi-k3");
+  ui.fireEvent.click(taskCheckbox("Предельные мультимодальные задачи"));
+  assert.deepEqual(selectedTasks(config), ["search", "contracts", "frontier"]);
   const card = decisionCard();
   assert.notEqual(card.textContent, previous);
   assert.ok(
@@ -125,6 +176,7 @@ test("выбор сценария меняет горизонт, нагрузк�
   );
   assert.ok(card.textContent?.includes(money(expected.result.buyTco)));
   assert.ok(card.textContent?.includes(money(expected.result.rentTco)));
+  assert.equal(ui.within(card).queryByRole("heading", { name: /Llama/ }), null);
   assert.ok(card.textContent?.includes(`Горизонт · ${input.years * 12} мес.`));
   const details = document.querySelector<HTMLDetailsElement>(
     "#calculation-details",
@@ -147,6 +199,194 @@ test("выбор сценария меняет горизонт, нагрузк�
     ui.screen.queryByRole("spinbutton"),
     null,
     "expanded explanation remains read-only",
+  );
+  ui.fireEvent.click(taskCheckbox("Предельные мультимодальные задачи"));
+  assert.deepEqual(selectedTasks(config), ["search", "contracts"]);
+  assert.equal(decisionCard().textContent, previous);
+});
+
+test("пустой выбор не выдаёт рекомендацию, выбор всех отмечает исходные двенадцать задач", async () => {
+  const config = cloneDefaultConfig();
+  await renderPage(config);
+  ui.fireEvent.click(ui.screen.getByRole("button", { name: "Снять выбор" }));
+  assert.deepEqual(selectedTasks(config), []);
+  assert.ok(
+    ui.screen.getByRole("heading", { name: "Выберите задачи для сравнения" }),
+  );
+  assert.equal(document.querySelector("#decision-title"), null);
+  assert.equal(ui.screen.queryByText("Оптимальный вариант по сценарию"), null);
+  assert.equal(
+    (
+      ui.screen.getByRole("button", {
+        name: "Сохранить вариант",
+      }) as HTMLButtonElement
+    ).disabled,
+    true,
+  );
+  assert.equal(
+    (ui.screen.getByRole("button", { name: "Экспорт" }) as HTMLButtonElement)
+      .disabled,
+    true,
+  );
+  ui.fireEvent.click(ui.screen.getByRole("button", { name: "Выбрать все" }));
+  assert.deepEqual(
+    selectedTasks(config),
+    config.tasks.filter((task) => task.enabled).map((task) => task.id),
+  );
+  assert.ok(
+    ui
+      .within(decisionCard())
+      .getByRole("heading", { name: "Kimi K3 2.8T-A104B" }),
+  );
+});
+
+test("переход в Параметры сохраняет выбранные задачи, а явное сохранение меняет расчёт на главной", async () => {
+  const config = cloneDefaultConfig();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  globalThis.fetch = async () =>
+    Response.json({ configured: false, authenticated: false, role: null });
+  ui.render(createElement(RoutedPages));
+  await ui.screen.findByRole("heading", { name: "ИИ для вашего бизнеса" });
+  ui.fireEvent.click(ui.screen.getByRole("button", { name: "Снять выбор" }));
+  ui.fireEvent.click(taskCheckbox("Корпоративный поиск и ответы"));
+  ui.fireEvent.click(taskCheckbox("Договоры и закупки"));
+  const before = decisionCard().textContent;
+  const parameters = ui.screen.getByRole("link", { name: "Параметры" });
+  assert.equal(parameters.getAttribute("href"), "/settings");
+  ui.fireEvent.click(parameters);
+  await ui.screen.findByRole("heading", { name: "Параметры" });
+  assert.equal(dom.window.location.pathname, "/settings");
+  await ui.screen.findByRole("checkbox", { name: "Договоры и закупки" });
+  assert.deepEqual(selectedTasks(config), ["search", "contracts"]);
+  assert.ok(ui.screen.getByRole("region", { name: "Сценарии использования" }));
+  assert.equal(
+    config.tasks.filter((task) =>
+      ui.screen.queryByRole("checkbox", { name: task.title }),
+    ).length,
+    12,
+  );
+  ui.fireEvent.click(taskCheckbox("Предельные мультимодальные задачи"));
+  ui.fireEvent.change(
+    ui.screen.getByRole("spinbutton", { name: "Использование, часов в месяц" }),
+    { target: { value: "320" } },
+  );
+  ui.fireEvent.change(
+    ui.screen.getByRole("spinbutton", { name: "Горизонт сравнения, лет" }),
+    { target: { value: "2" } },
+  );
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(TASK_SELECTION_KEY)!).taskIds,
+    ["search", "contracts"],
+    "draft task edits are published only on Save",
+  );
+  assert.equal(
+    JSON.parse(localStorage.getItem(STORAGE_KEY)!).revision,
+    config.revision,
+  );
+  ui.fireEvent.click(
+    ui.screen.getByRole("button", { name: "Сохранить изменения" }),
+  );
+  await ui.screen.findByText(/Ревизия \d+ сохранена в этом браузере/);
+  const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as AppConfig;
+  const input = scenarioInput(saved, saved.defaultScenarioId);
+  assert.deepEqual(input.taskIds, ["search", "contracts", "frontier"]);
+  assert.equal(input.hoursMonth, 320);
+  assert.equal(input.years, 2);
+  const expected = compareDeployments(saved, input).recommended;
+  assert.ok(expected?.result);
+  ui.fireEvent.click(
+    ui.screen.getByRole("link", { name: "Вернуться к сравнению" }),
+  );
+  await ui.screen.findByRole("heading", { name: "ИИ для вашего бизнеса" });
+  assert.equal(dom.window.location.pathname, "/");
+  assert.deepEqual(selectedTasks(config), ["search", "contracts", "frontier"]);
+  const card = decisionCard();
+  assert.notEqual(card.textContent, before);
+  assert.ok(
+    ui.within(card).getByRole("heading", { name: expected.model.name }),
+  );
+  assert.ok(card.textContent?.includes(money(expected.result.buyTco)));
+  assert.ok(card.textContent?.includes(money(expected.result.rentTco)));
+  assert.ok(card.textContent?.includes("Горизонт · 24 мес."));
+});
+
+test("изменение задач в Параметрах закрывает снимок на главной и сохраняет исходный сценарий неизменным", async () => {
+  const captured = cloneDefaultConfig();
+  const saved = createScenario(
+    "Архивный расчёт двух задач",
+    captured,
+    {
+      ...scenarioInput(captured, captured.defaultScenarioId),
+      taskIds: ["search", "summary"],
+      hoursMonth: 40,
+      years: 1,
+    },
+    new Date("2026-09-01T10:00:00Z"),
+  );
+  const original = JSON.stringify([saved]);
+  localStorage.setItem(SCENARIO_STORAGE_KEY, original);
+  const current = cloneDefaultConfig();
+  const defaults = current.scenarioPresets.find(
+    (preset) => preset.id === current.defaultScenarioId,
+  )!;
+  defaults.input.hoursMonth = 320;
+  defaults.input.years = 2;
+  current.gpus.forEach((gpu) => {
+    gpu.nodePriceRub *= 2;
+    gpu.rentPerGpuHourRub *= 2;
+  });
+  current.revision += 1;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(current));
+  globalThis.fetch = async () =>
+    Response.json({ configured: false, authenticated: false, role: null });
+  ui.render(createElement(RoutedPages));
+  await ui.screen.findByRole("heading", { name: "ИИ для вашего бизнеса" });
+  ui.fireEvent.click(
+    ui.screen.getByRole("button", { name: "Сохранить вариант" }),
+  );
+  ui.fireEvent.click(await ui.screen.findByRole("button", { name: "Открыть" }));
+  assert.ok(ui.screen.getByText("Сохранённые параметры и цены"));
+  assert.deepEqual(selectedTasks(captured), ["search", "summary"]);
+  assert.ok(decisionCard().textContent?.includes("Горизонт · 12 мес."));
+
+  ui.fireEvent.click(ui.screen.getByRole("link", { name: "Параметры" }));
+  await ui.screen.findByRole("checkbox", { name: "Пересказы и отчёты" });
+  assert.deepEqual(selectedTasks(current), ["search", "summary"]);
+  ui.fireEvent.click(taskCheckbox("Пересказы и отчёты"));
+  ui.fireEvent.click(taskCheckbox("Договоры и закупки"));
+  ui.fireEvent.click(
+    ui.screen.getByRole("button", { name: "Сохранить изменения" }),
+  );
+  await ui.screen.findByText(/Ревизия \d+ сохранена в этом браузере/);
+  ui.fireEvent.click(
+    ui.screen.getByRole("link", { name: "Вернуться к сравнению" }),
+  );
+  await ui.screen.findByRole("heading", { name: "ИИ для вашего бизнеса" });
+  await ui.waitFor(() =>
+    assert.deepEqual(selectedTasks(current), ["search", "contracts"]),
+  );
+  assert.equal(
+    Boolean(ui.screen.queryByText("Сохранённые параметры и цены")),
+    false,
+  );
+  assert.equal(
+    Boolean(ui.screen.queryByRole("heading", { name: saved.name })),
+    false,
+  );
+  const published = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as AppConfig;
+  const expected = compareDeployments(
+    published,
+    scenarioInput(published, published.defaultScenarioId),
+  ).recommended;
+  assert.ok(expected?.result);
+  const card = decisionCard();
+  assert.ok(card.textContent?.includes("Горизонт · 24 мес."));
+  assert.ok(card.textContent?.includes(money(expected.result.buyTco)));
+  assert.ok(card.textContent?.includes(money(expected.result.rentTco)));
+  assert.equal(
+    localStorage.getItem(SCENARIO_STORAGE_KEY),
+    original,
+    "leaving snapshot mode must not rewrite the saved scenario or its captured prices",
   );
 });
 
@@ -292,6 +532,7 @@ test("открытие сохранённого варианта использ�
   ui.fireEvent.click(await ui.screen.findByRole("button", { name: "Открыть" }));
   assert.ok(ui.screen.getByRole("heading", { name: "Согласованный вариант" }));
   assert.ok(ui.screen.getByText("Сохранённые параметры и цены"));
+  assert.deepEqual(selectedTasks(captured), saved.input.taskIds);
   const card = decisionCard();
   assert.ok(
     ui.within(card).getByRole("heading", { name: alternative.model.name }),

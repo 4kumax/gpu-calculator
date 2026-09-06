@@ -331,6 +331,6 @@ test("v3 draft migration preserves incomplete edits and adds scenario defaults w
   assert.equal(loaded.error, null);
   assert.equal(loaded.draft?.config.schemaVersion, 4);
   assert.equal(loaded.draft?.config.models[0].name, "");
-  assert.equal(loaded.draft?.config.scenarioPresets.length, 4);
+  assert.equal(loaded.draft?.config.scenarioPresets.length, 1);
   assert.equal(storage.getItem(DRAFT_KEY), raw);
 });

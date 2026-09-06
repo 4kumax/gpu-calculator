@@ -1,12 +1,14 @@
-import { useState } from "react";
-import type {
-  AppConfig,
-  BusinessScenarioPreset,
-  ScenarioInput,
-} from "@/lib/config";
-import { EnabledField, NumberField, SelectField, TextField } from "./fields";
+import type { AppConfig, ScenarioInput } from "@/lib/config";
+import { NumberField, SelectField } from "./fields";
+import { TaskSelector } from "@/components/task-selector";
+import { calculationDefaults, withCalculationDefaults } from "@/lib/scenarios";
 
-type Props = { config: AppConfig; onChange: (config: AppConfig) => void };
+type Props = {
+  config: AppConfig;
+  onChange: (config: AppConfig) => void;
+  selectedTaskIds: string[];
+  onTaskSelectionChange: (ids: string[]) => void;
+};
 type NumericKey = {
   [K in keyof ScenarioInput]: ScenarioInput[K] extends number ? K : never;
 }[keyof ScenarioInput];
@@ -57,119 +59,28 @@ const workloadFields: Array<{
     max: 1000000,
   },
 ];
-export function ScenarioPresetsEditor({ config, onChange }: Props) {
-  const [selectedId, setSelectedId] = useState(config.defaultScenarioId);
-  const selected =
-    config.scenarioPresets.find((preset) => preset.id === selectedId) ??
-    config.scenarioPresets[0];
-  const update = (patch: Partial<BusinessScenarioPreset>) =>
-    onChange({
-      ...config,
-      scenarioPresets: config.scenarioPresets.map((preset) =>
-        preset.id === selected.id ? { ...preset, ...patch } : preset,
-      ),
-    });
+export function ScenarioPresetsEditor({
+  config,
+  onChange,
+  selectedTaskIds,
+  onTaskSelectionChange,
+}: Props) {
+  const selected = { input: calculationDefaults(config) };
   const input = (patch: Partial<ScenarioInput>) =>
-    update({ input: { ...selected.input, ...patch } });
-  const duplicate = () => {
-    const copy = JSON.parse(JSON.stringify(selected)) as BusinessScenarioPreset;
-    copy.id = `scenario-${crypto.randomUUID()}`;
-    copy.title = `${selected.title} — копия`;
-    copy.enabled = true;
-    onChange({ ...config, scenarioPresets: [...config.scenarioPresets, copy] });
-    setSelectedId(copy.id);
-  };
-  if (!selected) return null;
+    onChange(withCalculationDefaults(config, patch));
   return (
     <div className="stack">
       <section className="panel settings-card">
-        <div className="settings-form-grid">
-          <SelectField
-            label="Редактировать сценарий"
-            value={selected.id}
-            onChange={setSelectedId}
-          >
-            {config.scenarioPresets.map((preset) => (
-              <option key={preset.id} value={preset.id}>
-                {preset.title}
-                {preset.enabled ? "" : " · скрыт"}
-              </option>
-            ))}
-          </SelectField>
-          <SelectField
-            label="Сценарий при первом открытии"
-            value={config.defaultScenarioId}
-            onChange={(defaultScenarioId) =>
-              onChange({ ...config, defaultScenarioId })
-            }
-          >
-            {config.scenarioPresets
-              .filter((preset) => preset.enabled)
-              .map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.title}
-                </option>
-              ))}
-          </SelectField>
-        </div>
         <p>
-          На главной странице руководитель выбирает готовый сценарий. Все
-          исходные параметры задаются здесь; изменения вступают в силу после
+          Тот же набор сценариев, что на главной странице. Можно выбрать
+          несколько. Изменения выбора и параметров применятся вместе после
           сохранения.
         </p>
-        <button className="button" onClick={duplicate}>
-          Создать сценарий на основе этого
-        </button>
-      </section>
-      <section className="panel settings-card">
-        <h3>Описание для руководителя</h3>
-        <div className="settings-form-grid">
-          <TextField
-            label="Название сценария"
-            value={selected.title}
-            onChange={(title) => update({ title })}
-          />
-          <TextField
-            label="Бизнес-задача"
-            value={selected.description}
-            onChange={(description) => update({ description })}
-          />
-        </div>
-        <EnabledField
-          label="Показывать сценарий на главной"
-          value={selected.enabled}
-          onChange={(enabled) => update({ enabled })}
+        <TaskSelector
+          tasks={config.tasks}
+          selectedIds={selectedTaskIds}
+          onChange={onTaskSelectionChange}
         />
-        {selected.id === config.defaultScenarioId && !selected.enabled && (
-          <p className="error-box">
-            Выберите другой сценарий по умолчанию перед сохранением.
-          </p>
-        )}
-        <fieldset className="capability-options">
-          <legend>Задачи сценария</legend>
-          {config.tasks.map((task) => (
-            <label key={task.id}>
-              <input
-                type="checkbox"
-                checked={selected.input.taskIds.includes(task.id)}
-                disabled={
-                  !task.enabled && !selected.input.taskIds.includes(task.id)
-                }
-                onChange={(event) =>
-                  input({
-                    taskIds: event.target.checked
-                      ? [...selected.input.taskIds, task.id]
-                      : selected.input.taskIds.filter((id) => id !== task.id),
-                  })
-                }
-              />
-              <span>
-                {task.title}
-                {task.enabled ? "" : " · выключена"}
-              </span>
-            </label>
-          ))}
-        </fieldset>
       </section>
       <section className="panel settings-card">
         <h3>Нагрузка</h3>

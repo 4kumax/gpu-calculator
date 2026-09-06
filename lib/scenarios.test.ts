@@ -90,21 +90,22 @@ test("input parser rejects untyped payloads and retains small valid workload sha
   );
 });
 
-test("default input follows published business presets and returns an independent full workload", () => {
+test("default input follows published calculation defaults and returns an independent full workload", () => {
   const config = cloneDefaultConfig();
-  config.defaultScenarioId = "documents";
-  config.scenarioPresets.find(
-    (preset) => preset.id === "documents",
-  )!.input.concurrency = 13;
+  const id = config.defaultScenarioId;
+  config.scenarioPresets.find((preset) => preset.id === id)!.input.concurrency =
+    13;
+  config.scenarioPresets.find((preset) => preset.id === id)!.input.inputTokens =
+    16384;
   const input = defaultInput(config);
   assert.equal(input.concurrency, 13);
   assert.equal(input.inputTokens, 16384);
   assert.equal(input.rentalMode, "gpu-hour");
   input.taskIds.length = 0;
-  assert.ok(scenarioInput(config, "documents").taskIds.length > 0);
+  assert.ok(scenarioInput(config, id).taskIds.length > 0);
   assert.throws(() => scenarioInput(config, "missing"), /Сценарий недоступен/);
   config.scenarioPresets[0].enabled = false;
-  assert.throws(() => scenarioInput(config, "pilot"), /Сценарий недоступен/);
+  assert.throws(() => scenarioInput(config, id), /Сценарий недоступен/);
 });
 
 test("old algorithm snapshots require an explicit recalculation into a new immutable scenario", () => {
