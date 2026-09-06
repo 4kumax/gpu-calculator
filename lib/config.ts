@@ -90,6 +90,8 @@ export type Assumptions = {
   defaultHoursMonth: number;
   defaultYears: number;
   defaultConcurrency: number;
+  defaultInputTokens: number;
+  defaultOutputTokens: number;
   electricityRubKwh: number;
   pue: number;
   supportPctCapexYear: number;
@@ -151,12 +153,40 @@ export type QualityAssessment = {
   toolSuccessPct?: number;
 };
 
+export type ScenarioInput = {
+  taskIds: string[];
+  modelId: string;
+  gpuId: string;
+  hoursMonth: number;
+  years: number;
+  concurrency: number;
+  reserveMode: "none" | "nplus1";
+  largeModelSharePct: number;
+  priority: "cost" | "balance" | "quality";
+  inputTokens: number;
+  outputTokens: number;
+  targetTtftMs: number;
+  minTokensPerSecond: number;
+  rentalMode: "gpu-hour" | "dedicated-node";
+  reserveRentalMode: "active-hours" | "always-on";
+};
+
+export type BusinessScenarioPreset = {
+  id: string;
+  enabled: boolean;
+  title: string;
+  description: string;
+  input: ScenarioInput;
+};
+
 export type AppConfig = {
-  schemaVersion: 3;
+  schemaVersion: 4;
   catalogVersion: string;
   revision: number;
   updatedAt: string;
   assumptions: Assumptions;
+  scenarioPresets: BusinessScenarioPreset[];
+  defaultScenarioId: string;
   models: ModelConfig[];
   gpus: GpuConfig[];
   tasks: TaskRule[];
@@ -171,8 +201,12 @@ type LegacyAppConfig = Omit<
   | "gpus"
   | "deploymentProfiles"
   | "qualityAssessments"
+  | "scenarioPresets"
+  | "defaultScenarioId"
+  | "assumptions"
 > & {
   schemaVersion: 2;
+  assumptions: Omit<Assumptions, "defaultInputTokens" | "defaultOutputTokens">;
   gpus: Omit<GpuConfig, "purchaseQuote" | "rentalQuote">[];
 };
 
@@ -1140,6 +1174,7 @@ const LEGACY_DEFAULT_CONFIG: LegacyAppConfig = {
     },
     {
       id: "kimi-k3",
+      checkpointWeightGb: 1560.860324864,
       enabled: true,
       name: "Kimi K3 2.8T-A104B",
       developer: "Moonshot AI",
@@ -1163,7 +1198,7 @@ const LEGACY_DEFAULT_CONFIG: LegacyAppConfig = {
       sessionsPerReplica: 8,
       precision: "MXFP4/MXFP8",
       license: "Kimi K3 License",
-      note: "Верхний frontier-класс мультимодальных и длительных агентных задач.",
+      note: "Размер тензоров чекпоинта 1560,860 ГБ подтверждён metadata.total_size в https://huggingface.co/moonshotai/Kimi-K3/raw/main/model.safetensors.index.json. Это смешанный формат весов, а не замер runtime VRAM. Публичный рецепт vLLM указывает минимум 8 × GB300; производительность и KV-кэш требуют проверки.",
       sourceUrl: "https://huggingface.co/moonshotai/Kimi-K3",
       sourceDate: "2026-09-02",
       evidence: "Публичные характеристики",
@@ -1298,12 +1333,17 @@ export function createEstimatedProfile(
   model: ModelConfig,
   gpu: Pick<GpuConfig, "id">,
 ): DeploymentProfile {
+  const isKimiRecipe =
+    model.id === "kimi-k3" &&
+    gpu.id === "gb300" &&
+    model.precision === "MXFP4/MXFP8" &&
+    model.minGpuCount === 8;
   return {
     id: `${model.id}--${gpu.id}--estimate`,
     enabled: true,
     modelId: model.id,
     gpuId: gpu.id,
-    engine: "Требует проверки",
+    engine: isKimiRecipe ? "vLLM · публичный рецепт" : "Требует проверки",
     engineVersion: "Не измерено",
     precision: model.precision,
     gpuCount: model.minGpuCount,
@@ -1314,17 +1354,120 @@ export function createEstimatedProfile(
     kvCacheGbPer1kTokens: 0.125,
     workspaceGbPerGpu: 1,
     status: "estimated",
-    sourceUrl: "",
-    sourceDate: "",
+    sourceUrl: isKimiRecipe ? "https://recipes.vllm.ai/moonshotai/Kimi-K3" : "",
+    sourceDate: isKimiRecipe ? "2026-09-06" : "",
     notes:
+      (isKimiRecipe
+        ? "Публичный рецепт указывает 8 × GB300 для одного экземпляра; это не измеренная производительность и не число GPU для любой нагрузки. Модель использует гибридные KDA/MLA состояния; общий коэффициент KV ниже не является модельной характеристикой. "
+        : "") +
       "Плановое допущение: KV-кэш 0,125 ГБ на 1000 токенов одной сессии, workspace 1 ГБ на GPU. Коэффициенты одинаковы для всех моделей и не являются замерами или характеристиками архитектуры. Параллельность перенесена из v2; движок, формат весов и топологию необходимо проверить.",
   };
+}
+
+export function createBusinessScenarioPresets(
+  tasks: TaskRule[],
+): BusinessScenarioPreset[] {
+  const available = new Set(
+    tasks.filter((task) => task.enabled).map((task) => task.id),
+  );
+  const common: ScenarioInput = {
+    taskIds: [],
+    modelId: "auto",
+    gpuId: "auto",
+    hoursMonth: 360,
+    years: 3,
+    concurrency: 8,
+    reserveMode: "none",
+    largeModelSharePct: 100,
+    priority: "balance",
+    inputTokens: 8192,
+    outputTokens: 1024,
+    targetTtftMs: 0,
+    minTokensPerSecond: 0,
+    rentalMode: "gpu-hour",
+    reserveRentalMode: "always-on",
+  };
+  return [
+    {
+      id: "pilot",
+      enabled: true,
+      title: "Пилот ИИ-ассистента",
+      description:
+        "Проверить пользу ИИ на поиске по базе знаний и подготовке ответов.",
+      input: {
+        ...common,
+        taskIds: ["search", "summary"],
+        concurrency: 4,
+        inputTokens: 4096,
+        hoursMonth: 160,
+        years: 1,
+        priority: "cost" as const,
+      },
+    },
+    {
+      id: "documents",
+      enabled: true,
+      title: "Работа с документами",
+      description:
+        "Анализировать договоры, извлекать данные и готовить сводные отчёты.",
+      input: {
+        ...common,
+        taskIds: ["extract", "summary", "contracts"],
+        concurrency: 8,
+        inputTokens: 16384,
+        outputTokens: 2048,
+      },
+    },
+    {
+      id: "analytics",
+      enabled: true,
+      title: "Аналитика и агенты",
+      description:
+        "Сопоставлять источники, проверять гипотезы и решать задачи с инструментами.",
+      input: {
+        ...common,
+        taskIds: ["management", "agents"],
+        concurrency: 4,
+        inputTokens: 32768,
+        outputTokens: 4096,
+      },
+    },
+    {
+      id: "enterprise",
+      enabled: true,
+      title: "Корпоративный масштаб",
+      description:
+        "Обеспечить постоянный доступ нескольких подразделений к корпоративному ИИ.",
+      input: {
+        ...common,
+        taskIds: ["search", "extract", "summary", "contracts"],
+        concurrency: 32,
+        inputTokens: 8192,
+        outputTokens: 2048,
+        hoursMonth: 730,
+        reserveMode: "nplus1" as const,
+      },
+    },
+  ].map((preset) => ({
+    ...preset,
+    input: {
+      ...preset.input,
+      taskIds: preset.input.taskIds.filter((id) => available.has(id)),
+    },
+  }));
 }
 
 function migrateV2(legacy: LegacyAppConfig): AppConfig {
   return {
     ...legacy,
-    schemaVersion: 3,
+    schemaVersion: 4,
+    assumptions: {
+      ...legacy.assumptions,
+      defaultInputTokens: 8192,
+      defaultOutputTokens: 1024,
+    },
+    scenarioPresets: createBusinessScenarioPresets(legacy.tasks),
+    defaultScenarioId: "pilot",
     catalogVersion: `${legacy.updatedAt.slice(0, 10)}.legacy-v2`,
     gpus: legacy.gpus.map((gpu) => ({
       ...gpu,
@@ -1357,7 +1500,7 @@ function migrateV2(legacy: LegacyAppConfig): AppConfig {
 
 export const DEFAULT_CONFIG: AppConfig = {
   ...migrateV2(LEGACY_DEFAULT_CONFIG),
-  catalogVersion: "2026-09-06.1",
+  catalogVersion: "2026-09-06.2",
   updatedAt: "2026-09-06T00:00:00.000Z",
 };
 
@@ -1505,6 +1648,8 @@ const ASSUMPTION_RULES: Record<keyof Assumptions, Rule> = {
   defaultHoursMonth: numberIn(0, 730),
   defaultYears: numberIn(1, 5, true),
   defaultConcurrency: numberIn(1, 10_000, true),
+  defaultInputTokens: numberIn(1, 10_000_000, true),
+  defaultOutputTokens: numberIn(1, 10_000_000, true),
   electricityRubKwh: numberIn(0),
   pue: numberIn(1, 10),
   supportPctCapexYear: percent,
@@ -1564,6 +1709,34 @@ const ASSESSMENT_RULES: Record<string, Rule> = {
   notes: string,
 };
 
+const SCENARIO_INPUT_RULES: Record<keyof ScenarioInput, Rule> = {
+  taskIds: (value) =>
+    Array.isArray(value) &&
+    value.length <= 1000 &&
+    value.every(text) &&
+    new Set(value).size === value.length,
+  modelId: text,
+  gpuId: text,
+  hoursMonth: numberIn(0, 730),
+  years: numberIn(1, 5, true),
+  concurrency: numberIn(1, 10000, true),
+  reserveMode: enumeration(["none", "nplus1"]),
+  largeModelSharePct: numberIn(0.001, 100),
+  priority: enumeration(["cost", "balance", "quality"]),
+  inputTokens: numberIn(1, 10_000_000, true),
+  outputTokens: numberIn(1, 10_000_000, true),
+  targetTtftMs: numberIn(0, 10_000_000),
+  minTokensPerSecond: numberIn(0, 1_000_000),
+  rentalMode: enumeration(["gpu-hour", "dedicated-node"]),
+  reserveRentalMode: enumeration(["active-hours", "always-on"]),
+};
+const PRESET_RULES: Record<string, Rule> = {
+  id: text,
+  enabled: boolean,
+  title: text,
+  description: string,
+};
+
 function shape(
   value: unknown,
   path: string,
@@ -1594,30 +1767,38 @@ function shape(
   return true;
 }
 
-function validateVersion(value: unknown, version: 2 | 3): string[] {
+function validateVersion(value: unknown, version: 2 | 3 | 4): string[] {
   const errors: string[] = [];
   const rootRules: Record<string, Rule> = {
     schemaVersion: enumeration([version]),
-    revision: numberIn(version === 3 ? 0 : 1, Number.MAX_SAFE_INTEGER, true),
+    revision: numberIn(version >= 3 ? 0 : 1, Number.MAX_SAFE_INTEGER, true),
     updatedAt: timestamp,
   };
-  if (version === 3) rootRules.catalogVersion = text;
+  if (version >= 3) rootRules.catalogVersion = text;
+  if (version === 4) rootRules.defaultScenarioId = text;
   if (
     !shape(value, "config", rootRules, errors, {}, [
       "assumptions",
       "models",
       "gpus",
       "tasks",
-      ...(version === 3 ? ["deploymentProfiles", "qualityAssessments"] : []),
+      ...(version >= 3 ? ["deploymentProfiles", "qualityAssessments"] : []),
+      ...(version === 4 ? ["scenarioPresets"] : []),
     ])
   )
     return errors;
-  shape(value.assumptions, "assumptions", ASSUMPTION_RULES, errors);
+  const assumptionRules = { ...ASSUMPTION_RULES } as Record<string, Rule>;
+  if (version < 4) {
+    delete assumptionRules.defaultInputTokens;
+    delete assumptionRules.defaultOutputTokens;
+  }
+  shape(value.assumptions, "assumptions", assumptionRules, errors);
   const lists = [
     "models",
     "gpus",
     "tasks",
-    ...(version === 3 ? ["deploymentProfiles", "qualityAssessments"] : []),
+    ...(version >= 3 ? ["deploymentProfiles", "qualityAssessments"] : []),
+    ...(version === 4 ? ["scenarioPresets"] : []),
   ];
   for (const key of lists) {
     const list = value[key];
@@ -1641,7 +1822,9 @@ function validateVersion(value: unknown, version: 2 | 3): string[] {
               ? TASK_RULES
               : key === "deploymentProfiles"
                 ? PROFILE_RULES
-                : ASSESSMENT_RULES;
+                : key === "scenarioPresets"
+                  ? PRESET_RULES
+                  : ASSESSMENT_RULES;
       const optional: Record<string, Rule> =
         key === "models"
           ? { checkpointWeightGb: positive }
@@ -1653,20 +1836,24 @@ function validateVersion(value: unknown, version: 2 | 3): string[] {
               }
             : {};
       const nested =
-        key === "gpus" && version === 3
+        key === "gpus" && version >= 3
           ? ["purchaseQuote", "rentalQuote"]
           : key === "deploymentProfiles"
             ? ["benchmark"]
-            : [];
+            : key === "scenarioPresets"
+              ? ["input"]
+              : [];
       if (!shape(entry, path, rules, errors, optional, nested)) continue;
       if (typeof entry.id === "string") {
         if (ids.has(entry.id))
           errors.push(`${path}.id: идентификатор должен быть уникальным.`);
         ids.add(entry.id);
       }
-      if (key === "gpus" && version === 3)
+      if (key === "gpus" && version >= 3)
         for (const quote of ["purchaseQuote", "rentalQuote"])
           shape(entry[quote], `${path}.${quote}`, QUOTE_RULES, errors);
+      if (key === "scenarioPresets")
+        shape(entry.input, `${path}.input`, SCENARIO_INPUT_RULES, errors);
       if (key === "deploymentProfiles" && entry.benchmark !== undefined)
         shape(entry.benchmark, `${path}.benchmark`, BENCHMARK_RULES, errors);
     }
@@ -1707,7 +1894,7 @@ function validateVersion(value: unknown, version: 2 | 3): string[] {
         `models[${index}].recommendedGpuId: выключенный GPU и нет доступного альтернативного профиля.`,
       );
   }
-  if (version === 3) {
+  if (version >= 3) {
     for (const [index, gpu] of config.gpus.entries())
       for (const key of ["purchaseQuote", "rentalQuote"] as const) {
         const quote = gpu[key];
@@ -1789,12 +1976,35 @@ function validateVersion(value: unknown, version: 2 | 3): string[] {
       }
     }
   }
+  if (version === 4) {
+    if (
+      !config.scenarioPresets.some(
+        (preset) => preset.enabled && preset.id === config.defaultScenarioId,
+      )
+    )
+      errors.push(
+        "defaultScenarioId: выберите включённый сценарий по умолчанию.",
+      );
+    for (const [index, preset] of config.scenarioPresets.entries()) {
+      const path = `scenarioPresets[${index}].input`;
+      for (const id of preset.input.taskIds)
+        if (!taskIds.has(id))
+          errors.push(`${path}.taskIds: отсутствующая задача ${id}.`);
+      if (
+        preset.input.modelId !== "auto" &&
+        !modelById.has(preset.input.modelId)
+      )
+        errors.push(`${path}.modelId: отсутствующая модель.`);
+      if (preset.input.gpuId !== "auto" && !gpuById.has(preset.input.gpuId))
+        errors.push(`${path}.gpuId: отсутствующий GPU.`);
+    }
+  }
   return errors;
 }
 
-/** Strict validation of the current schema. Use parseConfig to migrate schema 2. */
+/** Strict validation of the current schema. Use parseConfig to migrate schema 2 or 3. */
 export function validateConfig(value: unknown): string[] {
-  return validateVersion(value, 3);
+  return validateVersion(value, 4);
 }
 
 export type ParseConfigResult = {
@@ -1803,22 +2013,68 @@ export type ParseConfigResult = {
   warnings: string[];
 };
 export function parseConfig(value: unknown): ParseConfigResult {
-  const legacy = object(value) && value.schemaVersion === 2;
-  const errors = validateVersion(value, legacy ? 2 : 3);
+  const version =
+    object(value) && (value.schemaVersion === 2 || value.schemaVersion === 3)
+      ? value.schemaVersion
+      : 4;
+  const errors = validateVersion(value, version);
   if (errors.length) return { config: null, errors, warnings: [] };
-  const config = legacy
-    ? migrateV2(value as LegacyAppConfig)
-    : (JSON.parse(JSON.stringify(value)) as AppConfig);
-  const migrationErrors = legacy ? validateConfig(config) : [];
+  const cloned = JSON.parse(JSON.stringify(value));
+  const config: AppConfig =
+    version === 2
+      ? migrateV2(cloned as LegacyAppConfig)
+      : version === 3
+        ? {
+            ...cloned,
+            schemaVersion: 4,
+            assumptions: {
+              ...cloned.assumptions,
+              defaultInputTokens: 8192,
+              defaultOutputTokens: 1024,
+            },
+            scenarioPresets: createBusinessScenarioPresets(cloned.tasks),
+            defaultScenarioId: "pilot",
+          }
+        : (cloned as AppConfig);
+  const correctedBuiltinKimi =
+    version < 4 &&
+    config.models.some((model) => {
+      const matches =
+        model.id === "kimi-k3" &&
+        model.checkpointWeightGb === undefined &&
+        model.totalParamsB === 2800 &&
+        model.activeParamsB === 104 &&
+        model.bitsPerWeight === 4 &&
+        model.precision === "MXFP4/MXFP8" &&
+        model.sourceUrl === "https://huggingface.co/moonshotai/Kimi-K3";
+      if (matches) {
+        model.checkpointWeightGb = 1560.860324864;
+        model.note +=
+          " Размер тензоров чекпоинта уточнён по официальному индексу: 1560,860 ГБ; смешанные форматы весов нельзя считать как 2,8 трлн × 4 бита. Это не замер runtime VRAM.";
+      }
+      return matches;
+    });
+  const migrationErrors = version < 4 ? validateConfig(config) : [];
   if (migrationErrors.length)
     return { config: null, errors: migrationErrors, warnings: [] };
   return {
     config,
     errors: [],
-    warnings: legacy
-      ? [
-          "Каталог v2 перенесён в v3. Профили запуска и KV-кэш являются плановыми допущениями. Источники покупки и аренды разделены; неподтверждённые тарифы аренды помечены инженерной оценкой.",
-        ]
-      : [],
+    warnings:
+      version < 4
+        ? [
+            `Каталог v${version} перенесён в v4 с сохранением цен и характеристик. Добавлены четыре редактируемых бизнес-сценария. Нагрузка по умолчанию — 8192 токена входа и 1024 ответа; требования задач к максимальному контексту больше не задают фактическую длину запроса.`,
+            ...(correctedBuiltinKimi
+              ? [
+                  "Размер неизменённого встроенного Kimi K3 уточнён до 1560,860 ГБ по официальному индексу чекпоинта. Пользовательские размеры, форматы и источники сохранены.",
+                ]
+              : []),
+            ...(version === 2
+              ? [
+                  "Профили запуска и KV-кэш являются плановыми допущениями. Источники покупки и аренды разделены; неподтверждённые тарифы аренды помечены инженерной оценкой.",
+                ]
+              : []),
+          ]
+        : [],
   };
 }

@@ -1,7 +1,7 @@
 import { calculate, type CalculationInput } from "./calculator";
 import { parseConfig, type AppConfig } from "./config";
 
-export const CALCULATOR_VERSION = "3.0.0";
+export const CALCULATOR_VERSION = "4.0.0";
 export const INPUT_STORAGE_KEY = "gpu-calculator:input:v1";
 export const SCENARIO_STORAGE_KEY = "gpu-calculator:scenarios:v1";
 export const MAX_SCENARIOS = 20;
@@ -35,26 +35,22 @@ function calculationDate(value: unknown): value is string {
   );
 }
 
+export function scenarioInput(
+  config: AppConfig,
+  scenarioId: string,
+): CalculationInput {
+  const preset = config.scenarioPresets.find(
+    (item) => item.id === scenarioId && item.enabled,
+  );
+  if (!preset)
+    throw new Error(
+      "Сценарий недоступен. Выберите включённый сценарий в Параметрах.",
+    );
+  return JSON.parse(JSON.stringify(preset.input)) as CalculationInput;
+}
+
 export function defaultInput(config: AppConfig): CalculationInput {
-  return {
-    taskIds: ["contracts", "estimates", "incidents", "agents"].filter((id) =>
-      config.tasks.some((task) => task.id === id && task.enabled),
-    ),
-    modelId: "auto",
-    gpuId: "auto",
-    hoursMonth: config.assumptions.defaultHoursMonth,
-    years: config.assumptions.defaultYears,
-    concurrency: config.assumptions.defaultConcurrency,
-    reserveMode: "none",
-    largeModelSharePct: 100,
-    priority: "balance",
-    inputTokens: 0,
-    outputTokens: 1024,
-    targetTtftMs: 0,
-    minTokensPerSecond: 0,
-    rentalMode: "gpu-hour",
-    reserveRentalMode: "always-on",
-  };
+  return scenarioInput(config, config.defaultScenarioId);
 }
 
 export function parseInput(value: unknown): ParseResult<CalculationInput> {
@@ -148,6 +144,55 @@ export function parseInput(value: unknown): ParseResult<CalculationInput> {
     ) as CalculationInput,
     errors: [],
   };
+}
+
+/** Explicitly recalculate a known older snapshot as a NEW scenario; original stays unchanged. */
+export function migrateScenario(
+  value: unknown,
+  now = new Date(),
+): ParseResult<Scenario> {
+  if (!object(value) || value.calculatorVersion !== "3.0.0")
+    return {
+      value: null,
+      errors: ["Для пересчёта поддерживаются только сценарии версии 3.0.0."],
+    };
+  // Validate every original field; the deliberate version override authorizes current-code recalculation.
+  const parsed = parseScenario({
+    ...value,
+    calculatorVersion: CALCULATOR_VERSION,
+  });
+  if (!parsed.value) return parsed;
+  try {
+    const previous = parsed.value;
+    const input = {
+      ...previous.input,
+      asOf: now.toISOString(),
+      inputTokens:
+        previous.input.inputTokens ||
+        previous.config.assumptions.defaultInputTokens,
+      outputTokens:
+        previous.input.outputTokens ??
+        previous.config.assumptions.defaultOutputTokens,
+    };
+    return {
+      value: createScenario(
+        `${previous.name.slice(0, 85)} · пересчёт`,
+        previous.config,
+        input,
+        now,
+      ),
+      errors: [],
+    };
+  } catch (error) {
+    return {
+      value: null,
+      errors: [
+        error instanceof Error
+          ? error.message
+          : "Не удалось пересчитать сценарий.",
+      ],
+    };
+  }
 }
 
 export function createScenario(

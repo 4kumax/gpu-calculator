@@ -29,5 +29,10 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "app/page 2.tsx",
+    "app/settings/page 2.tsx",
+    "hooks/use-config 2.ts"
+  ]
 }

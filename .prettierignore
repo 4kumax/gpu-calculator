@@ -3,3 +3,7 @@ node_modules
 package-lock.json
 *.tsbuildinfo
 coverage
+.playwright-mcp
+app/page 2.tsx
+app/settings/page 2.tsx
+hooks/use-config 2.ts

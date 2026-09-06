@@ -1,191 +1,223 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { SlidersHorizontal } from "lucide-react";
-import { useConfig } from "@/hooks/use-config";
-import { calculate, type CalculationInput } from "@/lib/calculator";
-import { cloneDefaultConfig, parseConfig, type AppConfig } from "@/lib/config";
 import {
-  defaultInput,
+  ArrowUpRight,
+  Check,
+  ChevronDown,
+  Download,
+  FolderOpen,
+  SlidersHorizontal,
+} from "lucide-react";
+import { useConfig } from "@/hooks/use-config";
+import { compareDeployments, type ComparisonRow } from "@/lib/comparison";
+import { calculate } from "@/lib/calculator";
+import {
+  createScenario,
   downloadJson,
-  INPUT_STORAGE_KEY,
-  parseInput,
+  parseScenario,
+  scenarioInput,
+  scenarioReport,
   type Scenario,
 } from "@/lib/scenarios";
-import { CalculatorControls } from "@/components/calculator-controls";
-import { CalculatorResults } from "@/components/calculator-results";
+import { ExecutiveComparison } from "@/components/executive-comparison";
 import { ScenarioManager } from "@/components/scenario-manager";
 
+const VIEW_STORAGE_KEY = "gpu-calculator:executive-view:v4";
+
 export default function CalculatorPage() {
-  const {
-    config,
-    loaded,
-    status,
-    error: configError,
-    warnings: configWarnings,
-  } = useConfig();
-  const [input, setInput] = useState<CalculationInput>(() =>
-    defaultInput(cloneDefaultConfig()),
-  );
-  const [snapshot, setSnapshot] = useState<AppConfig | null>(null);
-  const [snapshotName, setSnapshotName] = useState("");
+  const store = useConfig();
+  const [presetId, setPresetId] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<Scenario | null>(null);
   const [initialized, setInitialized] = useState(false);
-  const [storageError, setStorageError] = useState("");
-  const [recoveryRaw, setRecoveryRaw] = useState<string | null>(null);
-  const activeConfig = snapshot ?? config;
+  const [error, setError] = useState("");
+  const [recovery, setRecovery] = useState<string | null>(null);
+  const savedRef = useRef<HTMLDetailsElement>(null);
+  const activeConfig = snapshot?.config ?? store.config;
+  const presets = store.config.scenarioPresets.filter(
+    (preset) => preset.enabled,
+  );
+  const activePreset =
+    presets.find((preset) => preset.id === presetId) ??
+    presets.find((preset) => preset.id === store.config.defaultScenarioId) ??
+    presets[0];
+  const input = useMemo(
+    () =>
+      snapshot?.input ??
+      scenarioInput(
+        store.config,
+        activePreset?.id ?? store.config.defaultScenarioId,
+      ),
+    [snapshot, store.config, activePreset?.id],
+  );
 
   useEffect(() => {
-    if (!loaded || initialized || status === "authentication-required") return;
-    let initialInput = defaultInput(config);
+    if (
+      !store.loaded ||
+      store.status === "authentication-required" ||
+      initialized
+    )
+      return;
     let raw: string | null = null;
     try {
-      raw = localStorage.getItem(INPUT_STORAGE_KEY);
+      raw = localStorage.getItem(VIEW_STORAGE_KEY);
       if (raw) {
-        const saved: unknown = JSON.parse(raw);
-        if (!saved || typeof saved !== "object" || Array.isArray(saved))
-          throw new Error("Некорректный формат сохранённого расчёта.");
-        const record = saved as Record<string, unknown>;
-        const parsed = parseInput(record.input);
-        if (!parsed.value) throw new Error(parsed.errors.join(" "));
-        if (record.snapshot) {
-          const savedConfig = parseConfig(record.snapshot);
-          if (!savedConfig.config)
-            throw new Error(
-              "Не удалось восстановить каталог сохранённого расчёта.",
-            );
-          setSnapshot(savedConfig.config);
-          setSnapshotName(
-            typeof record.snapshotName === "string"
-              ? record.snapshotName
-              : "Сохранённый расчёт",
-          );
+        const value: unknown = JSON.parse(raw);
+        if (!value || typeof value !== "object" || Array.isArray(value))
+          throw new Error("Не удалось прочитать сохранённый выбор.");
+        const data = value as Record<string, unknown>;
+        if (typeof data.presetId === "string") setPresetId(data.presetId);
+        if (typeof data.selectedId === "string") setSelectedId(data.selectedId);
+        if (data.snapshot) {
+          const parsed = parseScenario(data.snapshot);
+          if (!parsed.value) throw new Error(parsed.errors.join(" "));
+          setSnapshot(parsed.value);
         }
-        initialInput = parsed.value;
       }
     } catch (cause) {
-      if (raw) setRecoveryRaw(raw);
-      setStorageError(
-        `Восстановление расчёта: ${cause instanceof Error ? cause.message : "хранилище недоступно"} Исходные данные не изменены.`,
+      setRecovery(raw);
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Хранилище браузера недоступно.",
       );
     }
-    setInput(initialInput);
     setInitialized(true);
-  }, [loaded, initialized, config, status]);
+  }, [store.loaded, store.status, initialized]);
 
   useEffect(() => {
-    if (!initialized || recoveryRaw) return;
+    if (
+      !initialized ||
+      recovery ||
+      store.status === "error" ||
+      store.status === "authentication-required"
+    )
+      return;
     try {
       localStorage.setItem(
-        INPUT_STORAGE_KEY,
-        JSON.stringify({ input, snapshot, snapshotName }),
+        VIEW_STORAGE_KEY,
+        JSON.stringify({ presetId, selectedId, snapshot }),
       );
     } catch {
-      setStorageError(
-        "Не удалось сохранить текущий расчёт в браузере. Вы можете экспортировать его в JSON.",
+      setError(
+        "Выбор не удалось сохранить в браузере. Экспортируйте расчёт, чтобы сохранить его.",
       );
     }
-  }, [initialized, input, snapshot, snapshotName, recoveryRaw]);
+  }, [initialized, presetId, selectedId, snapshot, recovery, store.status]);
 
   const calculation = useMemo(() => {
     try {
-      return { result: calculate(activeConfig, input), error: "" };
+      const matrix = compareDeployments(activeConfig, input);
+      const fixed =
+        input.modelId !== "auto" || input.gpuId !== "auto"
+          ? calculate(activeConfig, input)
+          : null;
+      const preferred = fixed
+        ? (matrix.rows.find(
+            (row) =>
+              row.model.id === fixed.model.id && row.gpu.id === fixed.gpu.id,
+          ) ?? null)
+        : null;
+      return { comparison: matrix, preferred, error: "" };
     } catch (cause) {
       return {
-        result: null,
-        error:
-          cause instanceof Error
-            ? cause.message
-            : "Не удалось выполнить расчёт.",
+        comparison: null,
+        preferred: null,
+        error: cause instanceof Error ? cause.message : "Расчёт недоступен.",
       };
     }
   }, [activeConfig, input]);
-  const loadScenario = (scenario: Scenario) => {
-    setInput(scenario.input);
-    setSnapshot(scenario.config);
-    setSnapshotName(scenario.name);
-  };
-  const useCurrentCatalog = () => {
+  const comparison = calculation.comparison;
+  const selected =
+    comparison?.rows.find((row) => row.id === selectedId && row.result) ??
+    calculation.preferred ??
+    comparison?.recommended ??
+    comparison?.modelRows.find((row) => row.result) ??
+    null;
+  const finalInput = selected
+    ? { ...input, modelId: selected.model.id, gpuId: selected.gpu.id }
+    : input;
+  const scenarioName = snapshot?.name ?? activePreset?.title ?? "Расчёт";
+  const choosePreset = (id: string) => {
+    setPresetId(id);
     setSnapshot(null);
-    setSnapshotName("");
-    setInput((current) => ({ ...current, asOf: undefined }));
+    setSelectedId(null);
+  };
+  const exportCalculation = () => {
+    try {
+      downloadJson(
+        "gpu-decision.json",
+        scenarioReport(createScenario(scenarioName, activeConfig, finalInput)),
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Не удалось экспортировать расчёт.",
+      );
+    }
   };
 
-  if (!loaded || (!initialized && status !== "authentication-required"))
+  if (store.status === "authentication-required")
     return (
-      <main className="page-shell">
-        <div className="panel panel-body" role="status">
-          Загрузка каталога и сохранённого расчёта…
-        </div>
-      </main>
-    );
-  if (status === "authentication-required")
-    return (
-      <main className="page-shell">
-        <div className="panel panel-body">
+      <main className="executive-shell">
+        <div className="empty-state">
           <h1>Общий каталог</h1>
-          <p>Для доступа к корпоративному каталогу требуется вход.</p>
+          <p>Войдите, чтобы открыть сценарии и сравнить варианты.</p>
           <Link className="button primary" href="/settings">
             Войти в настройках
           </Link>
         </div>
       </main>
     );
-
-  if (status === "error" && configError)
+  if (!store.loaded || !initialized)
     return (
-      <main className="page-shell">
+      <main className="executive-shell">
+        <div className="empty-state" role="status">
+          Загрузка сценариев…
+        </div>
+      </main>
+    );
+  if (store.status === "error" && store.error)
+    return (
+      <main className="executive-shell">
         <div className="error-box" role="alert">
           <h1>Каталог недоступен</h1>
-          <p>{configError}</p>
-          <Link className="button" href="/settings">
-            Открыть настройки и восстановление
-          </Link>
+          <p>{store.error}</p>
+          <Link href="/settings">Открыть параметры и восстановление</Link>
         </div>
       </main>
     );
 
   return (
-    <main className="page-shell">
-      <div className="page-heading">
+    <main className="executive-shell">
+      <header className="executive-page-heading">
         <div>
-          <div className="eyebrow">
-            <SlidersHorizontal size={15} />
-            Управленческий калькулятор
-          </div>
-          <h1>GPU-инфраструктура для корпоративных задач</h1>
+          <span className="page-kicker">ПЛАНИРОВАНИЕ ИНФРАСТРУКТУРЫ</span>
+          <h1>ИИ для вашего бизнеса</h1>
+          <p>Выберите сценарий. Сравните модели, оборудование и стоимость.</p>
         </div>
-        <p>
-          Сопоставьте задачи, профиль нагрузки и оборудование. Сравните покупку
-          и аренду, сохраните сценарий с его исходными данными.
-        </p>
-      </div>
-      {configError && (
+        <Link className="settings-shortcut" href="/settings">
+          <SlidersHorizontal size={16} />
+          Параметры
+        </Link>
+      </header>
+
+      {error && (
         <div className="error-box" role="alert">
-          {configError} <Link href="/settings">Открыть настройки</Link>
-        </div>
-      )}
-      {!!configWarnings.length && (
-        <div className="notice-box" role="status">
-          {configWarnings.join(" ")}{" "}
-          <Link href="/settings">Проверить каталог</Link>
-        </div>
-      )}
-      {storageError && (
-        <div className="error-box" role="alert">
-          <p>{storageError}</p>
-          {recoveryRaw && (
+          <p>{error}</p>
+          {recovery && (
             <div className="action-row">
               <button
                 className="button"
                 onClick={() => {
                   try {
-                    downloadJson("calculation-recovery.json", {
-                      raw: recoveryRaw,
-                    });
+                    downloadJson("gpu-view-recovery.json", { raw: recovery });
                   } catch {
-                    setStorageError(
-                      "Не удалось скачать исходные данные. Они сохранены в хранилище браузера; повторите попытку экспорта.",
+                    setError(
+                      "Не удалось экспортировать данные. Исходные данные сохранены.",
                     );
                   }
                 }}
@@ -197,88 +229,164 @@ export default function CalculatorPage() {
                 onClick={() => {
                   try {
                     localStorage.setItem(
-                      `${INPUT_STORAGE_KEY}:recovery`,
-                      recoveryRaw,
+                      `${VIEW_STORAGE_KEY}:recovery`,
+                      recovery,
                     );
-                    localStorage.removeItem(INPUT_STORAGE_KEY);
-                    setRecoveryRaw(null);
-                    setStorageError("");
-                    setInput(defaultInput(config));
+                    localStorage.removeItem(VIEW_STORAGE_KEY);
+                    setRecovery(null);
+                    setError("");
+                    setPresetId("");
                     setSnapshot(null);
+                    setSelectedId(null);
                   } catch {
-                    setStorageError(
-                      "Не удалось создать резервную копию. Экспортируйте исходные данные вручную.",
-                    );
+                    setError("Не удалось создать резервную копию.");
                   }
                 }}
               >
-                Создать резервную копию и начать заново
+                Создать копию и восстановить выбор
               </button>
             </div>
           )}
         </div>
       )}
-      {snapshot && (
-        <div className="notice-box snapshot-banner">
-          <div>
-            <b>Открыт сценарий «{snapshotName}»</b>
-            <p>
-              Каталог {snapshot.catalogVersion}, ревизия {snapshot.revision}.
-              Источники проверяются на дату{" "}
-              {new Date(input.asOf ?? snapshot.updatedAt).toLocaleDateString(
-                "ru-RU",
-              )}
-              .
-            </p>
-          </div>
-          <button className="button" onClick={useCurrentCatalog}>
-            Пересчитать по текущему каталогу
+
+      <section
+        className="business-scenarios"
+        aria-labelledby="business-scenarios-title"
+      >
+        <div className="section-eyebrow">
+          <h2 id="business-scenarios-title">Ваш сценарий</h2>
+          <span>Параметры уже заданы</span>
+        </div>
+        <div className="preset-grid">
+          {presets.map((preset, index) => {
+            const active = !snapshot && activePreset?.id === preset.id;
+            return (
+              <button
+                key={preset.id}
+                className={`preset-card ${active ? "active" : ""}`}
+                aria-pressed={active}
+                onClick={() => choosePreset(preset.id)}
+              >
+                <span className="preset-top">
+                  <span className="preset-number">0{index + 1}</span>
+                  <span className="preset-check">
+                    {active && <Check size={13} />}
+                  </span>
+                </span>
+                <strong>{preset.title}</strong>
+                <span className="preset-description">{preset.description}</span>
+                <span className="preset-period">
+                  {preset.input.years * 12} месяцев ·{" "}
+                  {preset.input.reserveMode === "nplus1"
+                    ? "с резервом"
+                    : "без резерва"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <div className="scenario-context">
+        <div>
+          <h2>{scenarioName}</h2>
+          <span>
+            {snapshot
+              ? "Сохранённые параметры и цены"
+              : "Все варианты рассчитаны на одинаковой нагрузке"}
+          </span>
+        </div>
+        <div className="context-actions">
+          {snapshot && (
+            <button
+              className="text-button"
+              onClick={() => {
+                setSnapshot(null);
+                setSelectedId(null);
+              }}
+            >
+              К текущим сценариям
+            </button>
+          )}
+          <button
+            className="text-button"
+            disabled={!selected?.result}
+            onClick={() => {
+              if (savedRef.current) {
+                savedRef.current.open = true;
+                savedRef.current.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                });
+              }
+            }}
+          >
+            <FolderOpen size={14} />
+            Сохранить вариант
+          </button>
+          <button
+            className="text-button"
+            disabled={!selected?.result}
+            onClick={exportCalculation}
+          >
+            <Download size={14} />
+            Экспорт
           </button>
         </div>
-      )}
-      <div className="workspace-grid">
-        <CalculatorControls
+      </div>
+
+      {comparison ? (
+        <ExecutiveComparison
           config={activeConfig}
           input={input}
-          onChange={(patch) =>
-            setInput((current) => ({ ...current, ...patch }))
-          }
+          comparison={comparison}
+          selected={selected}
+          onSelect={(row: ComparisonRow) => setSelectedId(row.id)}
         />
-        {calculation.result ? (
-          <CalculatorResults
-            config={activeConfig}
-            input={input}
-            result={calculation.result}
-          />
-        ) : (
-          <div className="error-box" role="alert">
-            <b>Расчёт невозможен</b>
-            <p>{calculation.error}</p>
-            <button
-              className="button"
-              onClick={() => setInput(defaultInput(activeConfig))}
-            >
-              Восстановить параметры расчёта
-            </button>
-          </div>
-        )}
-      </div>
-      <ScenarioManager
-        config={activeConfig}
-        input={input}
-        onLoad={loadScenario}
-        disabled={!calculation.result}
-      />
-      <footer className="footer-note">
+      ) : (
+        <div className="error-box" role="alert">
+          <p>{calculation.error}</p>
+          <Link href="/settings">Проверить параметры сценария</Link>
+        </div>
+      )}
+
+      <details className="saved-workspace quiet-details" ref={savedRef}>
+        <summary>
+          Сохранённые варианты и сравнение сценариев <ChevronDown size={16} />
+        </summary>
+        <ScenarioManager
+          config={activeConfig}
+          input={finalInput}
+          defaultName={scenarioName}
+          onLoad={(scenario) => {
+            setSnapshot(scenario);
+            setSelectedId(null);
+          }}
+          disabled={!selected?.result}
+        />
+      </details>
+
+      {!!store.warnings.length && (
+        <details className="catalog-notes quiet-details">
+          <summary>
+            Обновление каталога <ChevronDown size={14} />
+          </summary>
+          <ul>
+            {store.warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+          <Link href="/settings">
+            Проверить параметры <ArrowUpRight size={12} />
+          </Link>
+        </details>
+      )}
+      <footer className="executive-footer">
         <span>
-          Предварительная оценка. Статус источников и измерений приведён в
-          деталях результата.
+          Плановая стоимость в рублях. Источники и допущения доступны в деталях.
         </span>
-        <span>
-          Каталог {activeConfig.catalogVersion} · ревизия{" "}
-          {activeConfig.revision} ·{" "}
-          {new Date(activeConfig.updatedAt).toLocaleDateString("ru-RU")}
-        </span>
+        <span>Каталог {activeConfig.catalogVersion}</span>
       </footer>
     </main>
   );

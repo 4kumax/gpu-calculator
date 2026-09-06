@@ -7,3 +7,8 @@ out/
 *.log
 .DS_Store
 *.tsbuildinfo
+.playwright-mcp/
+# Local duplicate source backups; keep originals outside the app build.
+/app/page 2.tsx
+/app/settings/page 2.tsx
+/hooks/use-config 2.ts

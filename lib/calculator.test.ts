@@ -167,7 +167,7 @@ test("нерекомендованный ручной GPU помечается �
   );
 });
 
-test("минимум GPU никогда не обходит нижнюю границу по памяти", () => {
+test("нижняя граница по памяти не подменяет поддержанную топологию профиля", () => {
   const config = cloneDefaultConfig();
   const model = config.models.find((candidate) => candidate.id === "kimi-k25");
   assert.ok(model);
@@ -176,9 +176,17 @@ test("минимум GPU никогда не обходит нижнюю гра�
   const plan = planModelDeployment(
     config,
     model,
-    withInput({ concurrency: 1 }),
+    withInput({ concurrency: 8 }),
   );
-  assert.equal(plan.baseGpuCount, 9);
+  assert.equal(plan.singleRequestMinGpuCount, 9);
+  assert.equal(plan.baseGpuCount, 8);
+  assert.equal(
+    plan.replicas,
+    1,
+    "duplicating an impossible instance cannot serve the request",
+  );
+  assert.equal(plan.gpuCount, 8);
+  assert.match(plan.reasons.join(" "), /не вмещает.*9 GPU.*профиле 8/);
 });
 
 test("в точке окупаемости TCO покупки и аренды совпадает", () => {
@@ -283,11 +291,19 @@ test("автовыбор остаётся допустимым для всех 4
 test("long input and longer output increase KV memory and change GPU provisioning", () => {
   const short = calculate(
     DEFAULT_CONFIG,
-    withInput({ modelId: "qwen38-27b", taskIds: ["search"] }),
+    withInput({
+      modelId: "qwen38-27b",
+      taskIds: ["search"],
+      inputTokens: 32000,
+    }),
   );
   const long = calculate(
     DEFAULT_CONFIG,
-    withInput({ modelId: "qwen38-27b", taskIds: ["long"] }),
+    withInput({
+      modelId: "qwen38-27b",
+      taskIds: ["long"],
+      inputTokens: 512000,
+    }),
   );
   assert.ok(long.requiredKvMemoryGb > short.requiredKvMemoryGb);
   assert.ok(long.gpuCount > short.gpuCount);
@@ -751,4 +767,125 @@ test("sensitivity chooses the favorable operating-hours direction for dedicated 
   );
   assert.equal(optimistic.hoursMonth, 525);
   assert.equal(conservative.hoursMonth, 730);
+});
+
+test("Kimi screenshot's 24 GPUs are reproduced only by the old million-token workload and weight estimate", () => {
+  const legacy = cloneDefaultConfig();
+  const model = legacy.models.find((item) => item.id === "kimi-k3")!;
+  delete model.checkpointWeightGb;
+  const result = calculate(
+    legacy,
+    withInput({
+      taskIds: ["contracts", "estimates", "incidents", "agents", "frontier"],
+      modelId: model.id,
+      gpuId: "gb300",
+      inputTokens: 1_000_000,
+      outputTokens: 1024,
+    }),
+  );
+  assert.ok(
+    Math.abs(result.plan.requiredWeightMemoryPerReplicaGb - 1568) < 1e-9,
+  );
+  assert.equal(result.plan.kvMemoryPerRequestGb, 125.128);
+  assert.equal(result.sessionsPerReplica, 3);
+  assert.equal(result.replicas, 3);
+  assert.equal(result.gpuCount, 24);
+  assert.equal(result.plan.baseGpuCount, 8);
+  assert.equal(result.confidence, "estimated");
+});
+
+test("task context capability does not expand the configured Kimi workload to one million tokens", () => {
+  const result = calculate(
+    DEFAULT_CONFIG,
+    withInput({
+      taskIds: ["frontier"],
+      modelId: "kimi-k3",
+      gpuId: "gb300",
+      inputTokens: 0,
+    }),
+  );
+  assert.equal(result.requiredContextK, 1000);
+  assert.equal(
+    result.effectiveInputTokens,
+    DEFAULT_CONFIG.assumptions.defaultInputTokens,
+  );
+  assert.equal(
+    result.outputTokens,
+    DEFAULT_CONFIG.assumptions.defaultOutputTokens,
+  );
+  assert.equal(result.plan.checkpointWeightPerReplicaGb, 1560.860324864);
+  assert.equal(result.plan.weightOnlyMinGpuCount, 6);
+  assert.equal(result.plan.singleRequestMinGpuCount, 7);
+  assert.equal(result.plan.baseGpuCount, 8);
+  assert.equal(result.replicas, 1);
+  assert.equal(result.gpuCount, 8);
+  assert.equal(result.plan.workloadNodes, 2);
+  assert.equal(result.purchasedGpuCount, 8);
+  assert.equal(result.confidence, "estimated");
+  const reserve = calculate(DEFAULT_CONFIG, {
+    ...baseInput,
+    modelId: "kimi-k3",
+    reserveMode: "nplus1",
+  });
+  assert.equal(reserve.gpuCount, 8);
+  assert.equal(reserve.purchasedGpuCount, 12);
+});
+
+test("changing selected tasks changes eligibility, not the explicit request length or KV memory", () => {
+  const shortTask = calculate(
+    DEFAULT_CONFIG,
+    withInput({ modelId: "kimi-k3", taskIds: ["search"], inputTokens: 8192 }),
+  );
+  const frontierTask = calculate(
+    DEFAULT_CONFIG,
+    withInput({ modelId: "kimi-k3", taskIds: ["frontier"], inputTokens: 8192 }),
+  );
+  assert.equal(shortTask.requiredKvMemoryGb, frontierTask.requiredKvMemoryGb);
+  assert.equal(shortTask.gpuCount, frontierTask.gpuCount);
+});
+
+test("unprofiled memory estimates optimize batching before replicating weights and never become supported", () => {
+  const config = cloneDefaultConfig();
+  const model = config.models[0];
+  model.checkpointWeightGb = 70;
+  model.minGpuCount = 8;
+  const gpu = config.gpus[0];
+  gpu.memoryGb = 80;
+  gpu.nodeGpuCount = 4;
+  config.deploymentProfiles = [];
+  config.assumptions.usableMemoryPct = 100;
+  config.assumptions.memoryOverheadPct = 0;
+  // Synthetic cache assumptions remain conditional; this long request is chosen to
+  // make a three-GPU batch smaller than two copies of a two-GPU instance.
+  const plan = planModelDeployment(
+    config,
+    model,
+    withInput({ inputTokens: 159999, outputTokens: 1 }),
+    gpu,
+  );
+  assert.equal(plan.weightOnlyMinGpuCount, 1);
+  assert.equal(plan.singleRequestMinGpuCount, 2);
+  assert.equal(plan.baseGpuCount, 3);
+  assert.equal(plan.replicas, 1);
+  assert.equal(plan.gpuCount, 3);
+  assert.equal(plan.purchasedGpuCount, 4);
+  assert.match(plan.reasons.join(" "), /отсутствует профиль/);
+  assert.equal(plan.confidence, "estimated");
+});
+
+test("resident MoE memory uses all experts rather than activated parameters", () => {
+  const config = cloneDefaultConfig();
+  const model = config.models.find((item) => item.id === "kimi-k3")!;
+  delete model.checkpointWeightGb;
+  model.activeParamsB = 1;
+  const plan = planModelDeployment(
+    config,
+    model,
+    withInput({ concurrency: 1 }),
+  );
+  assert.equal(
+    plan.checkpointWeightPerReplicaGb,
+    (model.totalParamsB * model.bitsPerWeight) / 8,
+  );
+  assert.equal(plan.checkpointWeightPerReplicaGb, 1400);
 });

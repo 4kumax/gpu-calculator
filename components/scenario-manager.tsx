@@ -8,6 +8,7 @@ import {
   createScenario,
   downloadJson,
   MAX_SCENARIOS,
+  migrateScenario,
   parseScenario,
   readScenarios,
   SCENARIO_STORAGE_KEY,
@@ -20,13 +21,18 @@ export function ScenarioManager({
   input,
   onLoad,
   disabled,
+  defaultName = "",
 }: {
   config: AppConfig;
   input: CalculationInput;
   onLoad: (scenario: Scenario) => void;
   disabled?: boolean;
+  defaultName?: string;
 }) {
-  const [name, setName] = useState("");
+  const [name, setName] = useState(defaultName);
+  useEffect(() => {
+    setName(defaultName);
+  }, [defaultName]);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [message, setMessage] = useState("");
@@ -34,6 +40,9 @@ export function ScenarioManager({
   const [recovery, setRecovery] = useState<string | null>(null);
   const [removed, setRemoved] = useState<Scenario | null>(null);
   const [ready, setReady] = useState(false);
+  const [pendingMigration, setPendingMigration] = useState<Scenario | null>(
+    null,
+  );
   const fileRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const load = () => {
@@ -114,8 +123,17 @@ export function ScenarioManager({
     try {
       if (file.size > 5 * 1024 * 1024)
         throw new Error("Файл сценария превышает 5 МБ.");
-      const parsed = parseScenario(JSON.parse(await file.text()));
-      if (!parsed.value) throw new Error(parsed.errors.join(" "));
+      const raw: unknown = JSON.parse(await file.text());
+      const parsed = parseScenario(raw);
+      if (!parsed.value) {
+        const migrated = migrateScenario(raw);
+        if (migrated.value) {
+          setPendingMigration(migrated.value);
+          setError("");
+          return;
+        }
+        throw new Error(parsed.errors.join(" "));
+      }
       const scenario = parsed.value;
       if (
         await commit((current) => {
@@ -161,10 +179,9 @@ export function ScenarioManager({
     >
       <div className="card-title-row">
         <div>
-          <h2 id="scenarios-title">Сценарии и согласование</h2>
+          <h2 id="scenarios-title">Сохранённые варианты</h2>
           <p className="help-text">
-            Каждый сценарий хранит входные данные, копию каталога и дату расчёта
-            в этом браузере.
+            Сохраните вариант с текущими ценами или сравните несколько решений.
           </p>
         </div>
         <span>
@@ -181,8 +198,99 @@ export function ScenarioManager({
           {message}
         </div>
       )}
+      {pendingMigration && (
+        <div className="notice-box" role="status">
+          <p>
+            Файл создан прежней версией алгоритма. Можно сохранить новый
+            пересчёт «{pendingMigration.name}». Исходный файл останется без
+            изменений; результаты могут отличаться.
+          </p>
+          <div className="action-row">
+            <button
+              className="button primary"
+              onClick={async () => {
+                if (await commit((current) => [...current, pendingMigration])) {
+                  setMessage(
+                    "Сохранён отдельный пересчёт по обновлённому алгоритму.",
+                  );
+                  setPendingMigration(null);
+                }
+              }}
+            >
+              Сохранить пересчёт
+            </button>
+            <button
+              className="button"
+              onClick={() => setPendingMigration(null)}
+            >
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
       {recovery && (
         <div className="action-row">
+          <button
+            className="button"
+            onClick={async () => {
+              const operation = () => {
+                const original = localStorage.getItem(SCENARIO_STORAGE_KEY);
+                if (original !== recovery)
+                  throw new Error(
+                    "Список изменился в другой вкладке. Обновите страницу перед пересчётом.",
+                  );
+                const list: unknown = JSON.parse(recovery);
+                if (!Array.isArray(list) || list.length > MAX_SCENARIOS)
+                  throw new Error(
+                    "Данные не являются списком сценариев прежней версии.",
+                  );
+                let count = 0;
+                const migrated = list.map((item) => {
+                  const current = parseScenario(item);
+                  if (current.value) return current.value;
+                  const updated = migrateScenario(item);
+                  if (!updated.value) throw new Error(updated.errors.join(" "));
+                  count++;
+                  return updated.value;
+                });
+                if (!count)
+                  throw new Error("Сценариев прежней версии не найдено.");
+                const checked = readScenarios(JSON.stringify(migrated));
+                if (!checked.value) throw new Error(checked.errors.join(" "));
+                localStorage.setItem(
+                  `${SCENARIO_STORAGE_KEY}:before-v4:${Date.now()}`,
+                  recovery,
+                );
+                localStorage.setItem(
+                  SCENARIO_STORAGE_KEY,
+                  JSON.stringify(checked.value),
+                );
+                setScenarios(checked.value);
+                setSelected([]);
+                setRecovery(null);
+                setError("");
+                setMessage(
+                  `Пересчитано сценариев: ${count}. Исходная библиотека сохранена отдельной резервной копией в браузере.`,
+                );
+              };
+              try {
+                if (navigator.locks)
+                  await navigator.locks.request(
+                    SCENARIO_STORAGE_KEY,
+                    operation,
+                  );
+                else operation();
+              } catch (cause) {
+                setError(
+                  cause instanceof Error
+                    ? cause.message
+                    : "Не удалось пересчитать сценарии. Исходный список сохранён.",
+                );
+              }
+            }}
+          >
+            Пересчитать старые сценарии с резервной копией
+          </button>
           <button
             className="button"
             onClick={() =>

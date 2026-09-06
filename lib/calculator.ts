@@ -22,7 +22,7 @@ export type CalculationInput = {
   reserveMode: "none" | "nplus1";
   largeModelSharePct: number;
   priority: "cost" | "balance" | "quality";
-  /** Zero (or omitted) derives input length from the selected task requirements. */
+  /** Zero (or omitted) uses the configured workload default, never the model/task context limit. */
   inputTokens?: number;
   outputTokens?: number;
   /** Zero (or omitted) means no latency / output-throughput SLO. */
@@ -67,6 +67,14 @@ export type DeploymentPlan = {
   outputTokens: number;
   effectiveConcurrency: number;
   sessionsPerReplica: number;
+  /** Physical-memory lower bound for packed weights alone; not a supported deployment. */
+  weightOnlyMinGpuCount: number;
+  /** Memory lower bound for one request including the configured headroom, cache and workspace. */
+  singleRequestMinGpuCount: number;
+  /** Packed checkpoint size before runtime headroom. Includes all resident MoE experts. */
+  checkpointWeightPerReplicaGb: number;
+  kvMemoryPerRequestGb: number;
+  memorySessionsPerReplica: number;
   requiredWeightMemoryPerReplicaGb: number;
   requiredWeightMemoryGb: number;
   requiredKvMemoryGb: number;
@@ -335,7 +343,7 @@ export function planModelDeployment(
   selectedProfile?: DeploymentProfile,
 ): DeploymentPlan {
   validateInput(input);
-  const { req } = selectedRequirements(config, input.taskIds);
+  selectedRequirements(config, input.taskIds);
   const gpu = selectedGpu ?? recommendedGpu(config, model);
   const catalogProfile =
     selectedProfile ??
@@ -345,7 +353,14 @@ export function planModelDeployment(
         profile.modelId === model.id &&
         profile.gpuId === gpu.id,
     );
-  const profile = catalogProfile ?? createEstimatedProfile(model, gpu);
+  // A minimum on the recommended accelerator is not a minimum on every other GPU.
+  // Unprofiled pairs expose a conditional memory estimate only, and stay ineligible.
+  const profile = catalogProfile ?? {
+    ...createEstimatedProfile(model, gpu),
+    gpuCount: 1,
+    tensorParallel: 1,
+    pipelineParallel: 1,
+  };
   const reasons: string[] = [];
   const warnings: string[] = [];
   if (!catalogProfile)
@@ -354,8 +369,10 @@ export function planModelDeployment(
     );
   if (profile.gpuId !== gpu.id || profile.modelId !== model.id)
     throw new Error("Профиль запуска не соответствует выбранным модели и GPU.");
-  const effectiveInputTokens = input.inputTokens || req.contextK * 1000;
-  const outputTokens = input.outputTokens ?? 1024;
+  const effectiveInputTokens =
+    input.inputTokens || config.assumptions.defaultInputTokens;
+  const outputTokens =
+    input.outputTokens ?? config.assumptions.defaultOutputTokens;
   const contextTokens = effectiveInputTokens + outputTokens;
   if (
     contextTokens > Math.min(profile.maxContextTokens, model.maxContextK * 1000)
@@ -367,17 +384,18 @@ export function planModelDeployment(
     warnings.push(
       "Контекст превышает нативный: необходима проверка расширения контекста и качества на выбранном движке.",
     );
-  if (input.inputTokens && input.inputTokens < req.contextK * 1000)
-    warnings.push(
-      "Вход короче требования выбранных задач: расчёт отражает явно заданную длину запроса.",
-    );
   // Rounding happens once, after the exact workload share (including fractions below 1%).
   const effectiveConcurrency = Math.max(
     1,
     Math.ceil((input.concurrency * input.largeModelSharePct) / 100),
   );
+  const checkpointWeightPerReplicaGb = modelWeightGb(model);
+  const weightOnlyMinGpuCount = Math.ceil(
+    checkpointWeightPerReplicaGb / gpu.memoryGb,
+  );
   const requiredWeightMemoryPerReplicaGb =
-    modelWeightGb(model) * (1 + config.assumptions.memoryOverheadPct / 100);
+    checkpointWeightPerReplicaGb *
+    (1 + config.assumptions.memoryOverheadPct / 100);
   const kvPerSessionGb = (contextTokens / 1000) * profile.kvCacheGbPer1kTokens;
   const usableGpuMemoryGb =
     (gpu.memoryGb * config.assumptions.usableMemoryPct) / 100;
@@ -386,16 +404,43 @@ export function planModelDeployment(
     throw new Error(
       `Workspace профиля ${profile.id} занимает всю доступную память GPU.`,
     );
-  const minimumToServeOne = Math.ceil(
+  const singleRequestMinGpuCount = Math.ceil(
     (requiredWeightMemoryPerReplicaGb + kvPerSessionGb) / remainingPerGpuGb,
   );
-  const baseGpuCount =
-    profile.status === "measured"
-      ? profile.gpuCount
-      : Math.max(profile.gpuCount, minimumToServeOne);
-  if (profile.status === "measured" && minimumToServeOne > baseGpuCount)
+  let baseGpuCount = profile.gpuCount;
+  if (!catalogProfile) {
+    // A one-request minimum followed by replication is not necessarily the
+    // smallest memory-only deployment. Evaluate batching before duplicating weights.
+    let bestActiveGpuCount = Infinity;
+    let bestReplicaCount = Infinity;
+    for (
+      let sessions = 1;
+      sessions <= Math.min(effectiveConcurrency, profile.maxConcurrency);
+      sessions += 1
+    ) {
+      const groupGpuCount = Math.max(
+        1,
+        Math.ceil(
+          (requiredWeightMemoryPerReplicaGb + kvPerSessionGb * sessions) /
+            remainingPerGpuGb,
+        ),
+      );
+      const replicaCount = Math.ceil(effectiveConcurrency / sessions);
+      const activeGpuCount = groupGpuCount * replicaCount;
+      if (
+        activeGpuCount < bestActiveGpuCount ||
+        (activeGpuCount === bestActiveGpuCount &&
+          replicaCount < bestReplicaCount)
+      ) {
+        baseGpuCount = groupGpuCount;
+        bestActiveGpuCount = activeGpuCount;
+        bestReplicaCount = replicaCount;
+      }
+    }
+  }
+  if (catalogProfile && singleRequestMinGpuCount > baseGpuCount)
     reasons.push(
-      "Измеренная конфигурация не вмещает веса, workspace и KV-кэш одной сессии; требуется новый профиль и повторный замер.",
+      `${profile.status === "measured" ? "Измеренная" : "Плановая"} конфигурация не вмещает веса, workspace и KV-кэш одной сессии: нижняя граница по памяти ${singleRequestMinGpuCount} GPU, в профиле ${baseGpuCount}. Требуется отдельный профиль с подтверждённой топологией.`,
     );
   const memorySessionCapacity =
     kvPerSessionGb === 0
@@ -420,10 +465,12 @@ export function planModelDeployment(
       memorySessionCapacity,
     ),
   );
-  const replicas = Math.max(
-    1,
-    Math.ceil(effectiveConcurrency / sessionsPerReplica),
-  );
+  // Duplicating an instance that cannot serve even one request never fixes it.
+  // Keep the rejected profile visible once instead of inventing a larger fleet.
+  const replicas =
+    singleRequestMinGpuCount > baseGpuCount
+      ? 1
+      : Math.max(1, Math.ceil(effectiveConcurrency / sessionsPerReplica));
   const gpuCount = baseGpuCount * replicas;
   if (
     !Number.isSafeInteger(baseGpuCount) ||
@@ -524,6 +571,11 @@ export function planModelDeployment(
     outputTokens,
     effectiveConcurrency,
     sessionsPerReplica,
+    weightOnlyMinGpuCount,
+    singleRequestMinGpuCount,
+    checkpointWeightPerReplicaGb,
+    kvMemoryPerRequestGb: kvPerSessionGb,
+    memorySessionsPerReplica: memorySessionCapacity,
     requiredWeightMemoryPerReplicaGb,
     requiredWeightMemoryGb,
     requiredKvMemoryGb,

@@ -130,16 +130,29 @@ test("история содержит предыдущую ревизию, а о
   assert.equal(readLocalConfig(storage).config.revision, base.revision + 2);
 });
 
-test("миграция v2 сохраняет исходный файл до явного сохранения v3", () => {
+test("миграция v2 сохраняет исходный файл до явного сохранения v4", () => {
   const storage = new MemoryStorage();
-  const { catalogVersion, deploymentProfiles, qualityAssessments, ...base } =
-    cloneDefaultConfig();
+  const {
+    catalogVersion,
+    deploymentProfiles,
+    qualityAssessments,
+    scenarioPresets,
+    defaultScenarioId,
+    ...base
+  } = cloneDefaultConfig();
   void catalogVersion;
   void deploymentProfiles;
   void qualityAssessments;
+  void scenarioPresets;
+  void defaultScenarioId;
+  const { defaultInputTokens, defaultOutputTokens, ...assumptions } =
+    base.assumptions;
+  void defaultInputTokens;
+  void defaultOutputTokens;
   const legacy = {
     ...base,
     schemaVersion: 2,
+    assumptions,
     gpus: base.gpus.map(({ purchaseQuote, rentalQuote, ...gpu }) => {
       void purchaseQuote;
       void rentalQuote;
@@ -150,7 +163,7 @@ test("миграция v2 сохраняет исходный файл до яв
   storage.setItem(LEGACY_STORAGE_KEY, raw);
   const loaded = readLocalConfig(storage);
   assert.equal(loaded.error, null);
-  assert.equal(loaded.config.schemaVersion, 3);
+  assert.equal(loaded.config.schemaVersion, 4);
   assert.ok(loaded.warnings.length);
   assert.equal(storage.getItem(STORAGE_KEY), null);
   assert.equal(storage.getItem(LEGACY_STORAGE_KEY), raw);
@@ -294,4 +307,30 @@ test("события черновиков и посторонних ключей
     assert.equal(isConfigStorageKey(key), false);
   for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY, null])
     assert.equal(isConfigStorageKey(key), true);
+});
+
+test("v3 draft migration preserves incomplete edits and adds scenario defaults without mutating raw", () => {
+  const storage = new MemoryStorage();
+  const config: Record<string, any> = structuredClone(cloneDefaultConfig());
+  config.schemaVersion = 3;
+  delete config.scenarioPresets;
+  delete config.defaultScenarioId;
+  delete config.assumptions.defaultInputTokens;
+  delete config.assumptions.defaultOutputTokens;
+  const draft = structuredClone(config);
+  draft.models[0].name = "";
+  const envelope = {
+    config: draft,
+    baseConfig: config,
+    updatedAt: "2026-09-06T12:00:00.000Z",
+    mode: "local",
+  };
+  const raw = JSON.stringify(envelope);
+  storage.setItem(DRAFT_KEY, raw);
+  const loaded = readDraft(storage);
+  assert.equal(loaded.error, null);
+  assert.equal(loaded.draft?.config.schemaVersion, 4);
+  assert.equal(loaded.draft?.config.models[0].name, "");
+  assert.equal(loaded.draft?.config.scenarioPresets.length, 4);
+  assert.equal(storage.getItem(DRAFT_KEY), raw);
 });

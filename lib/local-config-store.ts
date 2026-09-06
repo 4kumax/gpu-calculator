@@ -277,6 +277,7 @@ function safeDraftShape(value: unknown): boolean {
   ];
   return (
     sameShape(template, value) &&
+    (value as AppConfig).schemaVersion === 4 &&
     (value as AppConfig).models.length > 0 &&
     (value as AppConfig).gpus.length > 0
   );
@@ -294,16 +295,46 @@ export function readDraft(
     if (!value || typeof value !== "object") throw new Error();
     const entry = value as Record<string, unknown>;
     const base = parseConfig(entry.baseConfig);
+    let candidate = entry.config;
+    if (
+      candidate &&
+      typeof candidate === "object" &&
+      !Array.isArray(candidate) &&
+      (candidate as Record<string, unknown>).schemaVersion === 3 &&
+      base.config
+    ) {
+      const legacyDraft = candidate as Record<string, unknown>;
+      const assumptions = legacyDraft.assumptions;
+      candidate = {
+        ...legacyDraft,
+        schemaVersion: 4,
+        scenarioPresets: JSON.parse(
+          JSON.stringify(base.config.scenarioPresets),
+        ),
+        defaultScenarioId: base.config.defaultScenarioId,
+        assumptions:
+          assumptions &&
+          typeof assumptions === "object" &&
+          !Array.isArray(assumptions)
+            ? {
+                ...assumptions,
+                defaultInputTokens: base.config.assumptions.defaultInputTokens,
+                defaultOutputTokens:
+                  base.config.assumptions.defaultOutputTokens,
+              }
+            : assumptions,
+      };
+    }
     if (
       !base.config ||
       typeof entry.updatedAt !== "string" ||
       !["local", "shared"].includes(String(entry.mode)) ||
-      !safeDraftShape(entry.config)
+      !safeDraftShape(candidate)
     )
       throw new Error();
     return {
       draft: {
-        config: entry.config as AppConfig,
+        config: candidate as AppConfig,
         baseConfig: base.config,
         baseRevision:
           typeof entry.baseRevision === "number" &&

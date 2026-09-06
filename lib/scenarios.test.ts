@@ -4,6 +4,8 @@ import { cloneDefaultConfig } from "./config";
 import {
   createScenario,
   defaultInput,
+  migrateScenario,
+  scenarioInput,
   parseInput,
   parseScenario,
   readScenarios,
@@ -85,5 +87,46 @@ test("input parser rejects untyped payloads and retains small valid workload sha
   assert.equal(
     parseInput({ ...input, largeModelSharePct: 0.1 }).value?.largeModelSharePct,
     0.1,
+  );
+});
+
+test("default input follows published business presets and returns an independent full workload", () => {
+  const config = cloneDefaultConfig();
+  config.defaultScenarioId = "documents";
+  config.scenarioPresets.find(
+    (preset) => preset.id === "documents",
+  )!.input.concurrency = 13;
+  const input = defaultInput(config);
+  assert.equal(input.concurrency, 13);
+  assert.equal(input.inputTokens, 16384);
+  assert.equal(input.rentalMode, "gpu-hour");
+  input.taskIds.length = 0;
+  assert.ok(scenarioInput(config, "documents").taskIds.length > 0);
+  assert.throws(() => scenarioInput(config, "missing"), /Сценарий недоступен/);
+  config.scenarioPresets[0].enabled = false;
+  assert.throws(() => scenarioInput(config, "pilot"), /Сценарий недоступен/);
+});
+
+test("old algorithm snapshots require an explicit recalculation into a new immutable scenario", () => {
+  const config = cloneDefaultConfig();
+  const old = {
+    ...createScenario("Согласованный бюджет", config, defaultInput(config)),
+    calculatorVersion: "3.0.0",
+  };
+  const original = structuredClone(old);
+  assert.equal(parseScenario(old).value, null);
+  const migrated = migrateScenario(old, new Date("2026-09-07T00:00:00Z"));
+  assert.ok(migrated.value, migrated.errors.join(" "));
+  assert.notEqual(migrated.value.id, old.id);
+  assert.equal(migrated.value.calculatorVersion, "4.0.0");
+  assert.equal(migrated.value.input.asOf, "2026-09-07T00:00:00.000Z");
+  assert.deepEqual(old, original);
+  assert.equal(
+    migrateScenario({ ...old, calculatorVersion: "future" }).value,
+    null,
+  );
+  assert.equal(
+    migrateScenario({ ...old, input: { ...old.input, concurrency: -1 } }).value,
+    null,
   );
 });

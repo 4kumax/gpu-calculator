@@ -21,9 +21,11 @@ import {
   ProfilesEditor,
   QualityEditor,
 } from "@/components/settings/evidence-editors";
+import { ScenarioPresetsEditor } from "@/components/settings/scenario-editor";
 import { DiffPreview } from "@/components/settings/diff-preview";
 
 type Section =
+  | "scenarios"
   | "models"
   | "profiles"
   | "quality"
@@ -32,6 +34,10 @@ type Section =
   | "tasks"
   | "exchange";
 const SECTIONS: Record<Section, { title: string; description: string }> = {
+  scenarios: {
+    title: "Сценарии",
+    description: "Готовые бизнес-задачи и все исходные параметры расчёта",
+  },
   models: {
     title: "Модели",
     description: "Характеристики и возможности моделей",
@@ -92,7 +98,7 @@ export default function SettingsPage() {
   const [baseRevision, setBaseRevision] = useState(live.revision);
   const [draftMode, setDraftMode] = useState<"local" | "shared">("local");
   const [initialized, setInitialized] = useState(false);
-  const [section, setSection] = useState<Section>("models");
+  const [section, setSection] = useState<Section>("scenarios");
   const [errors, setErrors] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
@@ -326,13 +332,13 @@ export default function SettingsPage() {
         <div>
           <div className="eyebrow">
             <Settings2 size={15} />
-            Управление расчётной моделью
+            Настройка
           </div>
-          <h1>Параметры калькулятора</h1>
+          <h1>Параметры</h1>
         </div>
         <p>
-          Каталоги, подтверждённые профили запуска, цены и допущения. Изменения
-          сначала сохраняются в черновик.
+          Сценарии, модели и стоимость оборудования. Настройте один раз —
+          сравнивайте готовые варианты на главной.
         </p>
       </div>
       {store.configured && (
@@ -463,11 +469,12 @@ export default function SettingsPage() {
                 {SECTIONS[key].title}
               </button>
             ))}
-            <div className="local-warning">
+            <details className="local-warning">
+              <summary>Хранение данных</summary>
               {store.mode === "shared"
                 ? "Опубликованные параметры доступны участникам с доступом. Черновик хранится в текущей вкладке. Перед её закрытием экспортируйте JSON."
                 : "Локальный режим: каталог и история хранятся в браузере. Черновик восстанавливается при переходе и перезагрузке текущей вкладки; перед её закрытием экспортируйте JSON."}
-            </div>
+            </details>
           </aside>
           <section className="settings-main">
             <div className="settings-toolbar">
@@ -617,6 +624,9 @@ export default function SettingsPage() {
                 className="settings-editor"
                 aria-label={SECTIONS[section].title}
               >
+                {section === "scenarios" && (
+                  <ScenarioPresetsEditor config={draft} onChange={setDraft} />
+                )}
                 {section === "models" && (
                   <ModelsEditor config={draft} onChange={setDraft} />
                 )}{" "}

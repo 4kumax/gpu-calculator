@@ -5,6 +5,7 @@ import { JSDOM } from "jsdom";
 import { calculate, type CalculationInput } from "./calculator";
 import { cloneDefaultConfig } from "./config";
 import {
+  createScenario,
   defaultInput,
   parseScenario,
   readScenarios,
@@ -303,6 +304,125 @@ test("corrupt scenario storage remains intact and blocks a save until recovery",
   );
 });
 
+test("legacy scenario library changes only after explicit recalculation and retains its original backup", async () => {
+  const config = cloneDefaultConfig();
+  const input = scenarioInput();
+  const { scenarioPresets, defaultScenarioId, ...previousConfig } = config;
+  const { defaultInputTokens, defaultOutputTokens, ...previousAssumptions } =
+    config.assumptions;
+  const legacyConfig = {
+    ...previousConfig,
+    schemaVersion: 3,
+    assumptions: previousAssumptions,
+  };
+  const previous = ["Пилот прежней версии", "Бюджет прежней версии"].map(
+    (name) => ({
+      ...createScenario(name, config, input, new Date("2026-09-01T10:00:00Z")),
+      calculatorVersion: "3.0.0",
+      config: legacyConfig,
+      input: { ...input, inputTokens: 0, asOf: "2026-09-01T10:00:00.000Z" },
+    }),
+  );
+  const current = createScenario("Новый расчёт", config, input);
+  const original = JSON.stringify([...previous, current]);
+  localStorage.setItem(SCENARIO_STORAGE_KEY, original);
+  const backupKeys = () =>
+    Object.keys(localStorage).filter((key) =>
+      key.startsWith(`${SCENARIO_STORAGE_KEY}:before-v4:`),
+    );
+  const loaded: Scenario[] = [];
+  ui.render(
+    createElement(ScenarioManager, {
+      config,
+      input,
+      onLoad: (scenario) => loaded.push(scenario),
+    }),
+  );
+
+  assert.match(
+    ui.screen.getByRole("alert").textContent!,
+    /требуется версия калькулятора 3\.0\.0.*Текущая версия — 4\.0\.0/,
+  );
+  const recalculate = ui.screen.getByRole("button", {
+    name: "Пересчитать старые сценарии с резервной копией",
+  });
+  assert.ok(
+    ui.screen.getByRole("button", {
+      name: "Скачать исходные данные для восстановления",
+    }),
+  );
+  assert.ok(
+    ui.screen.getByRole("button", {
+      name: "Создать резервную копию и очистить список",
+    }),
+  );
+  ui.fireEvent.change(
+    ui.screen.getByRole("textbox", { name: "Название нового сценария" }),
+    { target: { value: "Не перезаписывать библиотеку" } },
+  );
+  const save = ui.screen.getByRole("button", {
+    name: "Сохранить сценарий",
+  }) as HTMLButtonElement;
+  assert.equal(save.disabled, true);
+  ui.fireEvent.click(save);
+  assert.equal(localStorage.getItem(SCENARIO_STORAGE_KEY), original);
+  assert.deepEqual(
+    backupKeys(),
+    [],
+    "reading a legacy library must not migrate or back it up implicitly",
+  );
+
+  ui.fireEvent.click(recalculate);
+  await ui.waitFor(() =>
+    assert.match(
+      ui.screen.getByRole("status").textContent!,
+      /Пересчитано сценариев: 2/,
+    ),
+  );
+  const backups = backupKeys();
+  assert.equal(backups.length, 1);
+  assert.equal(
+    localStorage.getItem(backups[0]),
+    original,
+    "backup retains exact bytes, including old versions and IDs",
+  );
+  const restored = readScenarios(localStorage.getItem(SCENARIO_STORAGE_KEY));
+  assert.ok(restored.value, restored.errors.join(" "));
+  assert.equal(restored.value.length, 3);
+  for (const [index, old] of previous.entries()) {
+    const migrated: Scenario = restored.value[index];
+    assert.notEqual(migrated.id, old.id);
+    assert.equal(migrated.calculatorVersion, "4.0.0");
+    assert.equal(migrated.config.schemaVersion, 4);
+    assert.equal(migrated.name, `${old.name} · пересчёт`);
+    assert.equal(migrated.input.inputTokens, defaultInputTokens);
+    assert.equal(migrated.input.concurrency, old.input.concurrency);
+    assert.equal(
+      migrated.config.gpus[0].nodePriceRub,
+      old.config.gpus[0].nodePriceRub,
+    );
+    assert.notEqual(migrated.input.asOf, old.input.asOf);
+  }
+  assert.equal(new Set(restored.value.map((scenario) => scenario.id)).size, 3);
+  assert.deepEqual(
+    restored.value[2],
+    current,
+    "current-version snapshots are not recreated during legacy recovery",
+  );
+  const migrated: Scenario = restored.value[0];
+  const choice = ui.screen.getByRole("checkbox", {
+    name: `Сравнить ${migrated.name}`,
+  }) as HTMLInputElement;
+  assert.equal(choice.checked, false);
+  ui.fireEvent.click(choice);
+  assert.equal(choice.checked, true);
+  ui.fireEvent.click(
+    ui.within(choice.closest("tr")!).getByRole("button", { name: "Открыть" }),
+  );
+  assert.deepEqual(loaded, [migrated]);
+  assert.equal(localStorage.getItem(backups[0]), original);
+});
+
 test("calculator result distinguishes equal costs from a buy advantage at every workload", () => {
   const config = cloneDefaultConfig();
   const input = scenarioInput();
@@ -323,26 +443,27 @@ test("calculator result distinguishes equal costs from a buy advantage at every 
   assert.equal(ui.screen.queryByText("не достигается", { exact: true }), null);
 });
 
-test("calculator page restores edited inputs across route remounts", async () => {
+test("calculator page opens business presets and restores the selected preset across route remounts", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     Response.json({ configured: false, authenticated: false, role: null });
   try {
     const { default: CalculatorPage } = await import("../app/page");
     const first = ui.render(createElement(CalculatorPage));
-    const hours = await ui.screen.findByRole("spinbutton", {
-      name: "Работа под нагрузкой, ч/мес.",
+    await ui.screen.findByRole("heading", { name: "ИИ для вашего бизнеса" });
+    assert.equal(ui.screen.queryByRole("spinbutton"), null);
+    const preset = ui.screen.getByRole("button", {
+      name: /Корпоративный масштаб/,
     });
-    ui.fireEvent.change(hours, { target: { value: "500" } });
+    ui.fireEvent.click(preset);
+    assert.equal(preset.getAttribute("aria-pressed"), "true");
     first.unmount();
     ui.render(createElement(CalculatorPage));
-    const restored = (await ui.screen.findByRole("spinbutton", {
-      name: "Работа под нагрузкой, ч/мес.",
-    })) as HTMLInputElement;
-    assert.equal(restored.value, "500");
-    assert.ok(
-      ui.screen.getByRole("heading", { name: "Сценарии и согласование" }),
-    );
+    const restored = await ui.screen.findByRole("button", {
+      name: /Корпоративный масштаб/,
+    });
+    assert.equal(restored.getAttribute("aria-pressed"), "true");
+    assert.ok(ui.screen.getByRole("heading", { name: "Сравнение вариантов" }));
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -360,7 +481,7 @@ test("calculator page requires a shared session before exposing a calculation", 
     );
     assert.equal(ui.screen.queryByRole("spinbutton"), null);
     assert.equal(
-      ui.screen.queryByRole("heading", { name: "Сценарии и согласование" }),
+      ui.screen.queryByRole("heading", { name: "ИИ для вашего бизнеса" }),
       null,
     );
   } finally {

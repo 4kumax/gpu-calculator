@@ -1,0 +1,296 @@
+import { useState } from "react";
+import type {
+  AppConfig,
+  BusinessScenarioPreset,
+  ScenarioInput,
+} from "@/lib/config";
+import { EnabledField, NumberField, SelectField, TextField } from "./fields";
+
+type Props = { config: AppConfig; onChange: (config: AppConfig) => void };
+type NumericKey = {
+  [K in keyof ScenarioInput]: ScenarioInput[K] extends number ? K : never;
+}[keyof ScenarioInput];
+const workloadFields: Array<{
+  key: NumericKey;
+  label: string;
+  min: number;
+  max: number;
+  step?: number;
+}> = [
+  {
+    key: "concurrency",
+    label: "Одновременные запросы в пике",
+    min: 1,
+    max: 10000,
+    step: 1,
+  },
+  {
+    key: "largeModelSharePct",
+    label: "Доля запросов на выбранную модель, %",
+    min: 0.001,
+    max: 100,
+  },
+  {
+    key: "inputTokens",
+    label: "Типичный вход, токенов",
+    min: 1,
+    max: 10000000,
+    step: 1,
+  },
+  {
+    key: "outputTokens",
+    label: "Типичный ответ, токенов",
+    min: 1,
+    max: 10000000,
+    step: 1,
+  },
+  {
+    key: "targetTtftMs",
+    label: "Первый токен не позднее, мс (0 — без требования)",
+    min: 0,
+    max: 10000000,
+  },
+  {
+    key: "minTokensPerSecond",
+    label: "Скорость ответа, токенов/с (0 — без требования)",
+    min: 0,
+    max: 1000000,
+  },
+];
+export function ScenarioPresetsEditor({ config, onChange }: Props) {
+  const [selectedId, setSelectedId] = useState(config.defaultScenarioId);
+  const selected =
+    config.scenarioPresets.find((preset) => preset.id === selectedId) ??
+    config.scenarioPresets[0];
+  const update = (patch: Partial<BusinessScenarioPreset>) =>
+    onChange({
+      ...config,
+      scenarioPresets: config.scenarioPresets.map((preset) =>
+        preset.id === selected.id ? { ...preset, ...patch } : preset,
+      ),
+    });
+  const input = (patch: Partial<ScenarioInput>) =>
+    update({ input: { ...selected.input, ...patch } });
+  const duplicate = () => {
+    const copy = JSON.parse(JSON.stringify(selected)) as BusinessScenarioPreset;
+    copy.id = `scenario-${crypto.randomUUID()}`;
+    copy.title = `${selected.title} — копия`;
+    copy.enabled = true;
+    onChange({ ...config, scenarioPresets: [...config.scenarioPresets, copy] });
+    setSelectedId(copy.id);
+  };
+  if (!selected) return null;
+  return (
+    <div className="stack">
+      <section className="panel settings-card">
+        <div className="settings-form-grid">
+          <SelectField
+            label="Редактировать сценарий"
+            value={selected.id}
+            onChange={setSelectedId}
+          >
+            {config.scenarioPresets.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.title}
+                {preset.enabled ? "" : " · скрыт"}
+              </option>
+            ))}
+          </SelectField>
+          <SelectField
+            label="Сценарий при первом открытии"
+            value={config.defaultScenarioId}
+            onChange={(defaultScenarioId) =>
+              onChange({ ...config, defaultScenarioId })
+            }
+          >
+            {config.scenarioPresets
+              .filter((preset) => preset.enabled)
+              .map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.title}
+                </option>
+              ))}
+          </SelectField>
+        </div>
+        <p>
+          На главной странице руководитель выбирает готовый сценарий. Все
+          исходные параметры задаются здесь; изменения вступают в силу после
+          сохранения.
+        </p>
+        <button className="button" onClick={duplicate}>
+          Создать сценарий на основе этого
+        </button>
+      </section>
+      <section className="panel settings-card">
+        <h3>Описание для руководителя</h3>
+        <div className="settings-form-grid">
+          <TextField
+            label="Название сценария"
+            value={selected.title}
+            onChange={(title) => update({ title })}
+          />
+          <TextField
+            label="Бизнес-задача"
+            value={selected.description}
+            onChange={(description) => update({ description })}
+          />
+        </div>
+        <EnabledField
+          label="Показывать сценарий на главной"
+          value={selected.enabled}
+          onChange={(enabled) => update({ enabled })}
+        />
+        {selected.id === config.defaultScenarioId && !selected.enabled && (
+          <p className="error-box">
+            Выберите другой сценарий по умолчанию перед сохранением.
+          </p>
+        )}
+        <fieldset className="capability-options">
+          <legend>Задачи сценария</legend>
+          {config.tasks.map((task) => (
+            <label key={task.id}>
+              <input
+                type="checkbox"
+                checked={selected.input.taskIds.includes(task.id)}
+                disabled={
+                  !task.enabled && !selected.input.taskIds.includes(task.id)
+                }
+                onChange={(event) =>
+                  input({
+                    taskIds: event.target.checked
+                      ? [...selected.input.taskIds, task.id]
+                      : selected.input.taskIds.filter((id) => id !== task.id),
+                  })
+                }
+              />
+              <span>
+                {task.title}
+                {task.enabled ? "" : " · выключена"}
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      </section>
+      <section className="panel settings-card">
+        <h3>Нагрузка</h3>
+        <p>
+          Длина входа — фактический размер обычного запроса. Максимальный
+          контекст в правилах задач проверяет возможности модели и не
+          увеличивает нагрузку автоматически.
+        </p>
+        <div className="settings-form-grid">
+          {workloadFields.map(({ key, ...field }) => (
+            <NumberField
+              key={key}
+              {...field}
+              value={selected.input[key]}
+              onChange={(value) =>
+                input({ [key]: value ?? selected.input[key] })
+              }
+            />
+          ))}
+        </div>
+      </section>
+      <section className="panel settings-card">
+        <h3>Условия сравнения</h3>
+        <div className="settings-form-grid">
+          <SelectField
+            label="Модель"
+            value={selected.input.modelId}
+            onChange={(modelId) => input({ modelId })}
+          >
+            <option value="auto">Все подходящие модели</option>
+            {config.models.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.name}
+                {model.enabled ? "" : " · выключена"}
+              </option>
+            ))}
+          </SelectField>
+          <SelectField
+            label="GPU"
+            value={selected.input.gpuId}
+            onChange={(gpuId) => input({ gpuId })}
+          >
+            <option value="auto">Все типы GPU</option>
+            {config.gpus.map((gpu) => (
+              <option key={gpu.id} value={gpu.id}>
+                {gpu.name}
+                {gpu.enabled ? "" : " · выключен"}
+              </option>
+            ))}
+          </SelectField>
+          <SelectField
+            label="Приоритет выбора"
+            value={selected.input.priority}
+            onChange={(priority) =>
+              input({ priority: priority as ScenarioInput["priority"] })
+            }
+          >
+            <option value="balance">
+              Достаточное качество, затем стоимость
+            </option>
+            <option value="cost">Минимальная стоимость</option>
+            <option value="quality">Максимальный класс качества</option>
+          </SelectField>
+          <NumberField
+            label="Использование, часов в месяц"
+            value={selected.input.hoursMonth}
+            min={0}
+            max={730}
+            onChange={(value) =>
+              input({ hoursMonth: value ?? selected.input.hoursMonth })
+            }
+          />
+          <NumberField
+            label="Горизонт сравнения, лет"
+            value={selected.input.years}
+            min={1}
+            max={5}
+            step={1}
+            onChange={(value) =>
+              input({ years: value ?? selected.input.years })
+            }
+          />
+          <SelectField
+            label="Резерв оборудования"
+            value={selected.input.reserveMode}
+            onChange={(reserveMode) =>
+              input({
+                reserveMode: reserveMode as ScenarioInput["reserveMode"],
+              })
+            }
+          >
+            <option value="none">Без резерва</option>
+            <option value="nplus1">Один резервный сервер (N+1)</option>
+          </SelectField>
+          <SelectField
+            label="Оплата аренды"
+            value={selected.input.rentalMode}
+            onChange={(rentalMode) =>
+              input({ rentalMode: rentalMode as ScenarioInput["rentalMode"] })
+            }
+          >
+            <option value="gpu-hour">GPU по часам использования</option>
+            <option value="dedicated-node">
+              Выделенный узел круглосуточно
+            </option>
+          </SelectField>
+          <SelectField
+            label="Оплата резервной конфигурации"
+            value={selected.input.reserveRentalMode}
+            onChange={(reserveRentalMode) =>
+              input({
+                reserveRentalMode:
+                  reserveRentalMode as ScenarioInput["reserveRentalMode"],
+              })
+            }
+          >
+            <option value="always-on">Круглосуточный резерв</option>
+            <option value="active-hours">Только в часы использования</option>
+          </SelectField>
+        </div>
+      </section>
+    </div>
+  );
+}

@@ -158,13 +158,17 @@ test("schema-2 migration preserves prices but never attributes an unverified ren
   delete legacy.catalogVersion;
   delete legacy.deploymentProfiles;
   delete legacy.qualityAssessments;
+  delete legacy.scenarioPresets;
+  delete legacy.defaultScenarioId;
+  delete legacy.assumptions.defaultInputTokens;
+  delete legacy.assumptions.defaultOutputTokens;
   for (const gpu of legacy.gpus) {
     delete gpu.purchaseQuote;
     delete gpu.rentalQuote;
   }
   const result = parseConfig(legacy);
   assert.ok(result.config, result.errors.join("\n"));
-  assert.equal(result.config.schemaVersion, 3);
+  assert.equal(result.config.schemaVersion, 4);
   assert.equal(result.config.revision, legacy.revision);
   assert.equal(
     result.config.gpus.find((gpu) => gpu.id === "h200")?.rentPerGpuHourRub,
@@ -278,4 +282,137 @@ test("an enabled alternative deployment profile can replace a disabled legacy re
   ];
   config.gpus.find((gpu) => gpu.id === model.recommendedGpuId)!.enabled = false;
   assert.deepEqual(validateConfig(config), []);
+});
+
+test("schema-3 migration adds explicit business workloads without changing existing catalog values", () => {
+  const legacy = plain();
+  legacy.schemaVersion = 3;
+  delete legacy.scenarioPresets;
+  delete legacy.defaultScenarioId;
+  delete legacy.assumptions.defaultInputTokens;
+  delete legacy.assumptions.defaultOutputTokens;
+  legacy.assumptions.defaultHoursMonth = 217;
+  legacy.gpus[0].nodePriceRub = 1234567;
+  const before = structuredClone(legacy);
+  const result = parseConfig(legacy);
+  assert.ok(result.config, result.errors.join("\n"));
+  assert.equal(result.config.schemaVersion, 4);
+  assert.equal(result.config.gpus[0].nodePriceRub, 1234567);
+  assert.equal(result.config.assumptions.defaultHoursMonth, 217);
+  assert.deepEqual(result.config.models, legacy.models);
+  assert.deepEqual(result.config.deploymentProfiles, legacy.deploymentProfiles);
+  assert.equal(result.config.scenarioPresets.length, 4);
+  assert.equal(result.config.defaultScenarioId, "pilot");
+  assert.ok(
+    result.config.scenarioPresets.every(
+      (preset) =>
+        preset.input.inputTokens > 0 && preset.input.inputTokens <= 32768,
+    ),
+  );
+  assert.deepEqual(legacy, before);
+  assert.ok(result.warnings.some((warning) => warning.includes("v3")));
+});
+
+test("business scenario validation rejects missing workloads and invalid references before publication", () => {
+  const cases: Array<[string, (config: Record<string, any>) => void]> = [
+    [
+      "defaultScenarioId",
+      (config) => {
+        config.defaultScenarioId = "missing";
+      },
+    ],
+    [
+      "defaultScenarioId",
+      (config) => {
+        config.scenarioPresets[0].enabled = false;
+      },
+    ],
+    [
+      "scenarioPresets[0].input.inputTokens",
+      (config) => {
+        config.scenarioPresets[0].input.inputTokens = 0;
+      },
+    ],
+    [
+      "scenarioPresets[0].input.reserveRentalMode",
+      (config) => {
+        delete config.scenarioPresets[0].input.reserveRentalMode;
+      },
+    ],
+    [
+      "scenarioPresets[0].input.taskIds",
+      (config) => {
+        config.scenarioPresets[0].input.taskIds = ["missing"];
+      },
+    ],
+    [
+      "scenarioPresets[0].input.gpuId",
+      (config) => {
+        config.scenarioPresets[0].input.gpuId = "missing";
+      },
+    ],
+    [
+      "scenarioPresets[0].input.modelId",
+      (config) => {
+        config.scenarioPresets[0].input.modelId = "missing";
+      },
+    ],
+    [
+      "scenarioPresets[1].id",
+      (config) => {
+        config.scenarioPresets[1].id = config.scenarioPresets[0].id;
+      },
+    ],
+  ];
+  for (const [path, mutate] of cases) {
+    const config = plain();
+    mutate(config);
+    const result = parseConfig(config);
+    assert.equal(result.config, null, path);
+    assert.ok(
+      result.errors.some((error) => error.includes(path)),
+      `${path}: ${result.errors.join(" ")}`,
+    );
+  }
+});
+
+test("migration corrects only the unmodified built-in Kimi weight assumption", () => {
+  const legacy = plain();
+  legacy.schemaVersion = 3;
+  delete legacy.scenarioPresets;
+  delete legacy.defaultScenarioId;
+  delete legacy.assumptions.defaultInputTokens;
+  delete legacy.assumptions.defaultOutputTokens;
+  const kimi = legacy.models.find(
+    (model: Record<string, any>) => model.id === "kimi-k3",
+  );
+  delete kimi.checkpointWeightGb;
+  const fixed = parseConfig(legacy);
+  assert.equal(
+    fixed.config?.models.find((model) => model.id === "kimi-k3")
+      ?.checkpointWeightGb,
+    1560.860324864,
+  );
+  assert.ok(fixed.warnings.some((warning) => warning.includes("Kimi")));
+  assert.equal(kimi.checkpointWeightGb, undefined);
+  kimi.checkpointWeightGb = 1700;
+  assert.equal(
+    parseConfig(legacy).config?.models.find((model) => model.id === "kimi-k3")
+      ?.checkpointWeightGb,
+    1700,
+  );
+  delete kimi.checkpointWeightGb;
+  kimi.sourceUrl = "https://example.com/custom-checkpoint";
+  assert.equal(
+    parseConfig(legacy).config?.models.find((model) => model.id === "kimi-k3")
+      ?.checkpointWeightGb,
+    undefined,
+  );
+  kimi.sourceUrl = "https://huggingface.co/moonshotai/Kimi-K3";
+  kimi.bitsPerWeight = 8;
+  assert.equal(
+    parseConfig(legacy).config?.models.find((model) => model.id === "kimi-k3")
+      ?.checkpointWeightGb,
+    undefined,
+  );
 });

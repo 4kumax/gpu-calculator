@@ -129,7 +129,7 @@ export function ModelsEditor({ config, onChange }: EditorProps) {
                 }
               />
               <SelectField
-                label="Каталожный GPU"
+                label="GPU справочного профиля"
                 value={model.recommendedGpuId}
                 onChange={(recommendedGpuId) =>
                   update(model.id, { recommendedGpuId })
@@ -142,7 +142,7 @@ export function ModelsEditor({ config, onChange }: EditorProps) {
                 ))}
               </SelectField>
               <NumberField
-                label="Каталожный минимум GPU"
+                label="GPU в справочном профиле"
                 value={model.minGpuCount}
                 step={1}
                 onChange={(value) =>
@@ -150,7 +150,7 @@ export function ModelsEditor({ config, onChange }: EditorProps) {
                 }
               />
               <NumberField
-                label="Плановая ёмкость реплики, сессий"
+                label="Запросов в справочном профиле"
                 value={model.sessionsPerReplica}
                 step={1}
                 onChange={(value) =>
@@ -534,7 +534,9 @@ export function TasksEditor({ config, onChange }: EditorProps) {
 const ASSUMPTION_LABELS: Record<string, string> = {
   defaultHoursMonth: "Использование по умолчанию, ч/мес.",
   defaultYears: "Горизонт по умолчанию, лет",
-  defaultConcurrency: "Параллельность по умолчанию",
+  defaultConcurrency: "Параллельность для совместимости со старыми файлами",
+  defaultInputTokens: "Вход при незаданной длине в старом расчёте, токенов",
+  defaultOutputTokens: "Ответ при незаданной длине в старом расчёте, токенов",
   electricityRubKwh: "Электроэнергия, ₽/кВт·ч",
   pue: "PUE центра обработки данных",
   supportPctCapexYear: "Поддержка, % CAPEX/год",
@@ -551,29 +553,46 @@ const ASSUMPTION_LABELS: Record<string, string> = {
   stalePriceDays: "Срок актуальности цены, дней",
 };
 export function AssumptionsEditor({ config, onChange }: EditorProps) {
+  const renderField = ([key, value]: [string, number]) => (
+    <NumberField
+      key={key}
+      label={ASSUMPTION_LABELS[key] ?? key}
+      value={value}
+      onChange={(next) =>
+        onChange({
+          ...config,
+          assumptions: {
+            ...config.assumptions,
+            [key]: next ?? 0,
+          } as Assumptions,
+        })
+      }
+    />
+  );
+  const fields = Object.entries(config.assumptions).filter(
+    (entry): entry is [string, number] => typeof entry[1] === "number",
+  );
   return (
-    <div className="panel settings-card">
-      <h3>Финансовые и эксплуатационные параметры</h3>
-      <div className="settings-form-grid">
-        {Object.entries(config.assumptions).map(([key, value]) =>
-          typeof value === "number" ? (
-            <NumberField
-              key={key}
-              label={ASSUMPTION_LABELS[key] ?? key}
-              value={value}
-              onChange={(next) =>
-                onChange({
-                  ...config,
-                  assumptions: {
-                    ...config.assumptions,
-                    [key]: next ?? 0,
-                  } as Assumptions,
-                })
-              }
-            />
-          ) : null,
-        )}
-      </div>
+    <div className="stack">
+      <section className="panel settings-card">
+        <h3>Финансовые и эксплуатационные параметры</h3>
+        <div className="settings-form-grid">
+          {fields
+            .filter(([key]) => !key.startsWith("default"))
+            .map(renderField)}
+        </div>
+      </section>
+      <details className="panel settings-card">
+        <summary>Совместимость с прежними расчётами</summary>
+        <p>
+          Текущие сценарии хранят нагрузку и срок сравнения в собственных
+          параметрах. Значения ниже используются как резерв для прежних файлов с
+          незаданными параметрами.
+        </p>
+        <div className="settings-form-grid">
+          {fields.filter(([key]) => key.startsWith("default")).map(renderField)}
+        </div>
+      </details>
     </div>
   );
 }
