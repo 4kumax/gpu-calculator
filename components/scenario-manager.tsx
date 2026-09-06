@@ -1,5 +1,6 @@
 "use client";
 
+import { calculationMonths } from "@/lib/horizon";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Save, Upload } from "lucide-react";
 import { calculate, compactRub, type CalculationInput } from "@/lib/calculator";
@@ -538,7 +539,7 @@ export function ScenarioManager({
                     {scenario.input.concurrency} запросов ·{" "}
                     {scenario.input.hoursMonth} ч/мес.
                     <br />
-                    {scenario.input.years} лет
+                    {calculationMonths(scenario.input)} мес.
                   </td>
                 ))}
               </tr>

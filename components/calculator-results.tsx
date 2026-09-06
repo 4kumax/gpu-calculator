@@ -9,6 +9,7 @@ import {
   type CalculationResult,
 } from "@/lib/calculator";
 import { QUALITY_TIER_LABELS, type AppConfig } from "@/lib/config";
+import { calculationMonths } from "@/lib/horizon";
 import { CostAnalysis } from "./cost-analysis";
 
 function SourceLink({ url, label }: { url: string; label: string }) {
@@ -125,7 +126,7 @@ export function CalculatorResults({
       )}
       <div className="panel cost-card">
         <div className="card-title-row">
-          <h3>Сравнение на {input.years * 12} месяцев</h3>
+          <h3>Сравнение на {calculationMonths(input)} месяцев</h3>
           <span className={`decision ${result.decision}`}>
             {equal
               ? "Затраты равны"

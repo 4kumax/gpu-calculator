@@ -4,8 +4,11 @@ import {
   type CalculationInput,
 } from "./calculator";
 import { parseConfig, type AppConfig, type ScenarioInput } from "./config";
+import { calculationMonths } from "./horizon";
 
-export const CALCULATOR_VERSION = "5.0.0";
+export const CALCULATOR_VERSION = "5.1.0";
+/** Version 5.0 used exactly the same formulas, with an integral-years horizon. */
+export const REPRODUCIBLE_VERSIONS = ["5.0.0", CALCULATOR_VERSION] as const;
 export const RECALCULABLE_VERSIONS = ["3.0.0", "4.0.0"] as const;
 export const INPUT_STORAGE_KEY = "gpu-calculator:input:v1";
 export const SCENARIO_STORAGE_KEY = "gpu-calculator:scenarios:v1";
@@ -135,6 +138,7 @@ export function parseInput(
   enumeration("reserveRentalMode", ["active-hours", "always-on"], true);
   numeric("hoursMonth", 0, options.legacyHours ? 730 : HOURS_PER_MONTH, false);
   numeric("years", 1, 5, true);
+  numeric("months", 1, 120, true, true);
   numeric("concurrency", 1, 10000, true);
   numeric("largeModelSharePct", 0.001, 100, false);
   numeric("inputTokens", 0, 10000000, true, true);
@@ -150,6 +154,7 @@ export function parseInput(
     "gpuId",
     "hoursMonth",
     "years",
+    "months",
     "concurrency",
     "reserveMode",
     "largeModelSharePct",
@@ -190,7 +195,10 @@ export function migrateScenario(
   // Read the previous month bound only in this explicit migration path. The
   // original snapshot remains untouched; a 730-hour workload becomes 720 hours
   // in the new 30-day planning month. Other historical workload choices remain.
-  const legacyInput = parseInput(value.input, { legacyHours: true });
+  const legacyInput = parseInput(
+    object(value.input) ? { ...value.input, months: undefined } : value.input,
+    { legacyHours: true },
+  );
   if (!legacyInput.value) return { value: null, errors: legacyInput.errors };
   // Validate every original field; the deliberate version override authorizes current-code recalculation.
   const parsed = parseScenario({
@@ -249,6 +257,7 @@ export function createScenario(
   const snapshot = JSON.parse(JSON.stringify(config)) as AppConfig;
   const frozenInput = {
     ...parsed.value,
+    months: calculationMonths(parsed.value),
     asOf: input.asOf ?? now.toISOString(),
   };
   calculate(snapshot, frozenInput);
@@ -268,9 +277,21 @@ export function parseScenario(value: unknown): ParseResult<Scenario> {
     return { value: null, errors: ["Сценарий должен быть объектом."] };
   const errors: string[] = [];
   if (value.version !== 1) errors.push("Неизвестная версия файла сценария.");
-  if (value.calculatorVersion !== CALCULATOR_VERSION)
+  if (
+    !REPRODUCIBLE_VERSIONS.some(
+      (version) => version === value.calculatorVersion,
+    )
+  )
     errors.push(
       `Для воспроизведения этого сценария требуется версия калькулятора ${String(value.calculatorVersion)}. Текущая версия — ${CALCULATOR_VERSION}.`,
+    );
+  if (
+    value.calculatorVersion === "5.0.0" &&
+    object(value.input) &&
+    value.input.months !== undefined
+  )
+    errors.push(
+      "Версия 5.0.0 хранит срок только в годах. Явный срок в месяцах поддерживается с версии 5.1.0.",
     );
   if (typeof value.id !== "string" || !value.id.trim() || value.id.length > 200)
     errors.push("Некорректный ID сценария.");
@@ -305,7 +326,7 @@ export function parseScenario(value: unknown): ParseResult<Scenario> {
   return {
     value: {
       version: 1,
-      calculatorVersion: CALCULATOR_VERSION,
+      calculatorVersion: value.calculatorVersion as string,
       id: value.id as string,
       name: value.name as string,
       createdAt: value.createdAt as string,
@@ -348,7 +369,13 @@ export function readScenarios(raw: string | null): ParseResult<Scenario[]> {
 }
 
 export function scenarioReport(scenario: Scenario) {
-  if (scenario.calculatorVersion !== CALCULATOR_VERSION)
+  if (
+    !REPRODUCIBLE_VERSIONS.some(
+      (version) => version === scenario.calculatorVersion,
+    ) ||
+    (scenario.calculatorVersion === "5.0.0" &&
+      scenario.input.months !== undefined)
+  )
     throw new Error(
       `Сценарий версии ${scenario.calculatorVersion} требует явного пересчёта для версии ${CALCULATOR_VERSION}.`,
     );

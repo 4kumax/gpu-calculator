@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "@/components/decision-charts.css";
 import { AppHeader } from "@/components/app-header";
 
 export const metadata: Metadata = {

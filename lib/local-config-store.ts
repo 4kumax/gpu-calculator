@@ -3,6 +3,7 @@ import {
   cloneDefaultConfig,
   LEGACY_STORAGE_KEY,
   parseConfig,
+  normalizeDraftCatalog,
   STORAGE_KEY,
 } from "./config";
 
@@ -236,6 +237,7 @@ function sameShape(reference: unknown, candidate: unknown): boolean {
         ([
           "checkpointWeightGb",
           "catalogUpdateVersion",
+          "months",
           "benchmark",
           "correctAnswerPct",
           "extractionErrorPct",
@@ -337,7 +339,7 @@ export function readDraft(
       throw new Error();
     return {
       draft: {
-        config: candidate as AppConfig,
+        config: normalizeDraftCatalog(candidate as AppConfig),
         baseConfig: base.config,
         baseRevision:
           typeof entry.baseRevision === "number" &&

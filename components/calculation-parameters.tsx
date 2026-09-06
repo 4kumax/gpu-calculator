@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { calculationMonths } from "@/lib/horizon";
+import { calculationDefaults } from "@/lib/scenarios";
 import {
   HOURS_PER_MONTH,
   type CalculationInput,
@@ -132,7 +134,7 @@ function CostTable({
 export function CalculationParameters({ config, input, result }: Props) {
   const { model, gpu, profile, plan } = result;
   const a = config.assumptions;
-  const months = input.years * 12;
+  const months = calculationMonths(input);
   const dedicated = input.rentalMode === "dedicated-node";
   const workingRentalGpu = dedicated
     ? plan.workloadNodes * gpu.nodeGpuCount
@@ -175,10 +177,7 @@ export function CalculationParameters({ config, input, result }: Props) {
       <ParameterSection
         title="Условия сравнения"
         entries={[
-          [
-            "Горизонт расчёта",
-            `${number(input.years)} лет / ${number(months)} месяцев`,
-          ],
+          ["Горизонт расчёта", `${number(months)} месяцев`],
           ["Использование оборудования", `${number(input.hoursMonth)} ч/мес.`],
           ["База полного месяца", `${HOURS_PER_MONTH} часов`],
           [
@@ -602,7 +601,10 @@ export function CalculationParameters({ config, input, result }: Props) {
         title="Значения каталога по умолчанию"
         entries={[
           ["Часы по умолчанию", `${number(a.defaultHoursMonth)} ч/мес.`],
-          ["Горизонт по умолчанию", `${number(a.defaultYears)} лет`],
+          [
+            "Срок по умолчанию",
+            `${number(calculationMonths(calculationDefaults(config)))} месяцев`,
+          ],
           ["Одновременные запросы по умолчанию", number(a.defaultConcurrency)],
           ["Вход по умолчанию", `${number(a.defaultInputTokens)} токенов`],
           ["Ответ по умолчанию", `${number(a.defaultOutputTokens)} токенов`],

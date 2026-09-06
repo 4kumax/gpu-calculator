@@ -533,7 +533,7 @@ export function TasksEditor({ config, onChange }: EditorProps) {
 
 const ASSUMPTION_LABELS: Record<string, string> = {
   defaultHoursMonth: "Использование по умолчанию, ч/мес.",
-  defaultYears: "Горизонт по умолчанию, лет",
+  defaultYears: "Срок прежних расчётов без поля месяцев, лет",
   defaultConcurrency: "Параллельность для совместимости со старыми файлами",
   defaultInputTokens: "Вход при незаданной длине в старом расчёте, токенов",
   defaultOutputTokens: "Ответ при незаданной длине в старом расчёте, токенов",

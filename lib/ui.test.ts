@@ -347,7 +347,7 @@ test("legacy scenario library changes only after explicit recalculation and reta
 
   assert.match(
     ui.screen.getByRole("alert").textContent!,
-    /требуется версия калькулятора 3\.0\.0.*Текущая версия — 5\.0\.0/,
+    /требуется версия калькулятора 3\.0\.0.*Текущая версия — 5\.1\.0/,
   );
   const recalculate = ui.screen.getByRole("button", {
     name: "Пересчитать старые сценарии с резервной копией",
@@ -457,7 +457,14 @@ test("calculator page restores multiple selected tasks across route remounts", a
     const { default: CalculatorPage } = await import("../app/page");
     const first = ui.render(createElement(CalculatorPage));
     await ui.screen.findByRole("heading", { name: "ИИ для вашего бизнеса" });
-    assert.equal(ui.screen.queryByRole("spinbutton"), null);
+    assert.equal(
+      (
+        ui.screen.getByRole("spinbutton", {
+          name: "Срок расчёта, месяцев",
+        }) as HTMLInputElement
+      ).value,
+      "36",
+    );
     ui.fireEvent.click(ui.screen.getByRole("button", { name: "Снять выбор" }));
     const titles = [
       "Договоры и закупки",

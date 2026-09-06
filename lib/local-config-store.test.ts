@@ -354,3 +354,32 @@ test("historical catalog reads preserve the original monthly policy and GPU list
   );
   assert.deepEqual(readLocalHistory(storage)[0].config, old);
 });
+
+test("restored pre-update drafts receive the month/task migration once without losing incomplete edits", () => {
+  const storage = new MemoryStorage();
+  const base = cloneDefaultConfig();
+  base.catalogUpdateVersion = 1;
+  base.tasks = base.tasks.slice(0, 12);
+  base.scenarioPresets[0].input.years = 1;
+  delete base.scenarioPresets[0].input.months;
+  const draft = structuredClone(base);
+  draft.models[0].name = "";
+  saveDraft(storage, {
+    config: draft,
+    baseConfig: base,
+    updatedAt: "2026-09-07T00:00:00.000Z",
+    mode: "local",
+  });
+  const restored = readDraft(storage);
+  assert.equal(restored.error, null);
+  assert.equal(restored.draft?.config.catalogUpdateVersion, 2);
+  assert.equal(restored.draft?.config.scenarioPresets[0].input.months, 36);
+  assert.equal(restored.draft?.config.tasks.length, 18);
+  assert.equal(restored.draft?.config.models[0].name, "");
+  restored.draft!.config.scenarioPresets[0].input.months = 18;
+  saveDraft(storage, restored.draft!);
+  assert.equal(
+    readDraft(storage).draft?.config.scenarioPresets[0].input.months,
+    18,
+  );
+});

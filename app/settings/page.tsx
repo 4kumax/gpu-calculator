@@ -4,6 +4,8 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileJson, Save, Settings2 } from "lucide-react";
 import { useConfig } from "@/hooks/use-config";
 import { useTaskSelection } from "@/hooks/use-task-selection";
+import { useCalculationHorizon } from "@/hooks/use-calculation-horizon";
+import { calculationMonths } from "@/lib/horizon";
 import { calculationDefaults, withCalculationDefaults } from "@/lib/scenarios";
 import { AppConfig, cloneDefaultConfig, parseConfig } from "@/lib/config";
 import {
@@ -101,6 +103,14 @@ export default function SettingsPage() {
       store.status !== "authentication-required" &&
       store.status !== "error",
   );
+  const horizon = useCalculationHorizon(
+    live,
+    store.loaded &&
+      store.status !== "authentication-required" &&
+      store.status !== "error",
+  );
+  const [monthsDraft, setMonthsDraft] = useState<number | null>(null);
+  const selectedMonths = monthsDraft ?? horizon.months;
   const [selectionDraft, setSelectionDraft] = useState<string[] | null>(null);
   const selectedTaskIds = selectionDraft ?? taskSelection.taskIds;
   const [draft, setDraft] = useState<AppConfig>(cloneDefaultConfig);
@@ -125,8 +135,16 @@ export default function SettingsPage() {
       configDifferences(base, draft).length > 0 ||
       (selectionDraft !== null &&
         JSON.stringify(selectionDraft) !==
-          JSON.stringify(taskSelection.taskIds)),
-    [base, draft, selectionDraft, taskSelection.taskIds],
+          JSON.stringify(taskSelection.taskIds)) ||
+      (monthsDraft !== null && monthsDraft !== horizon.months),
+    [
+      base,
+      draft,
+      selectionDraft,
+      taskSelection.taskIds,
+      monthsDraft,
+      horizon.months,
+    ],
   );
   const conflict =
     initialized &&
@@ -142,7 +160,13 @@ export default function SettingsPage() {
     store.sharedRevision === 0;
 
   useEffect(() => {
-    if (!store.loaded || !taskSelection.loaded || initialized) return;
+    if (
+      !store.loaded ||
+      !taskSelection.loaded ||
+      !horizon.loaded ||
+      initialized
+    )
+      return;
     let restored: ReturnType<typeof readDraft> = { draft: null, error: null };
     try {
       restored = readDraft(window.sessionStorage);
@@ -152,7 +176,11 @@ export default function SettingsPage() {
     }
     if (restored.draft) {
       setDraft(restored.draft.config);
-      setSelectionDraft(calculationDefaults(restored.draft.config).taskIds);
+      const restoredInput = calculationDefaults(restored.draft.config);
+      setSelectionDraft(restoredInput.taskIds);
+      // Drafts retain temporarily invalid finite numbers so the user can correct them.
+      // Publication validates the range; restoration must not call the strict calculator helper.
+      setMonthsDraft(restoredInput.months ?? restoredInput.years * 12);
       setBase(restored.draft.baseConfig);
       setBaseRevision(
         restored.draft.baseRevision ?? restored.draft.baseConfig.revision,
@@ -173,6 +201,7 @@ export default function SettingsPage() {
   }, [
     store.loaded,
     taskSelection.loaded,
+    horizon.loaded,
     initialized,
     live,
     currentRevision,
@@ -194,6 +223,7 @@ export default function SettingsPage() {
         ? saveDraft(window.sessionStorage, {
             config: withCalculationDefaults(draft, {
               taskIds: selectedTaskIds,
+              months: selectedMonths,
             }),
             baseConfig: base,
             baseRevision,
@@ -216,6 +246,7 @@ export default function SettingsPage() {
     draftMode,
     draftRecovery,
     selectedTaskIds,
+    selectedMonths,
   ]);
 
   useEffect(() => {
@@ -248,6 +279,7 @@ export default function SettingsPage() {
   };
   const loadLive = () => {
     setSelectionDraft(null);
+    setMonthsDraft(null);
     setDraft(live);
     setBase(live);
     setBaseRevision(currentRevision);
@@ -267,12 +299,15 @@ export default function SettingsPage() {
   };
   const handleSave = async () => {
     if (conflict || readOnly) return;
-    if (taskSelection.error) {
-      setErrors([taskSelection.error]);
+    if (taskSelection.error || horizon.error) {
+      setErrors([taskSelection.error || horizon.error!]);
       return;
     }
     const checked = parseConfig(
-      withCalculationDefaults(draft, { taskIds: selectedTaskIds }),
+      withCalculationDefaults(draft, {
+        taskIds: selectedTaskIds,
+        months: selectedMonths,
+      }),
     );
     if (!checked.config) {
       setErrors(checked.errors);
@@ -307,7 +342,18 @@ export default function SettingsPage() {
         ]);
         return;
       }
+      if (
+        !horizon.setMonths(
+          calculationMonths(calculationDefaults(result.config)),
+        )
+      ) {
+        setErrors([
+          "Каталог сохранён, но срок расчёта не записан в браузере. Правка срока оставлена в черновике; повторите сохранение после восстановления доступа к хранилищу.",
+        ]);
+        return;
+      }
       setSelectionDraft(null);
+      setMonthsDraft(null);
       setMessage(
         `Ревизия ${result.config.revision} сохранена ${store.mode === "shared" ? "в общем каталоге" : "в этом браузере"}. ${result.warnings.length ? result.warnings.join(" ") : "Калькулятор использует новые параметры."}`,
       );
@@ -438,6 +484,29 @@ export default function SettingsPage() {
           )}
         </section>
       )}
+      {horizon.error && (
+        <div className="error-box" role="alert">
+          <p>{horizon.error}</p>
+          {horizon.recoveryRaw && (
+            <div className="action-row">
+              <button
+                className="button"
+                onClick={() =>
+                  exportRaw(horizon.recoveryRaw!, "gpu-horizon-recovery.json")
+                }
+              >
+                Скачать исходный срок
+              </button>
+              <button
+                className="button"
+                onClick={() => horizon.recoverMonths(selectedMonths)}
+              >
+                Сохранить копию и восстановить срок
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {taskSelection.error && (
         <div className="error-box" role="alert">
           <p>{taskSelection.error}</p>
@@ -522,7 +591,10 @@ export default function SettingsPage() {
             onClick={() =>
               exportRaw(
                 JSON.stringify(
-                  withCalculationDefaults(draft, { taskIds: selectedTaskIds }),
+                  withCalculationDefaults(draft, {
+                    taskIds: selectedTaskIds,
+                    months: selectedMonths,
+                  }),
                   null,
                   2,
                 ),
@@ -577,6 +649,7 @@ export default function SettingsPage() {
                       JSON.stringify(
                         withCalculationDefaults(draft, {
                           taskIds: selectedTaskIds,
+                          months: selectedMonths,
                         }),
                         null,
                         2,
@@ -692,6 +765,9 @@ export default function SettingsPage() {
                       setSelectionDraft(
                         calculationDefaults(pending.config).taskIds,
                       );
+                      setMonthsDraft(
+                        calculationMonths(calculationDefaults(pending.config)),
+                      );
                       setChangeMessage(pending.title);
                       setPending(null);
                       setMessage(
@@ -719,6 +795,8 @@ export default function SettingsPage() {
                     onChange={setDraft}
                     selectedTaskIds={selectedTaskIds}
                     onTaskSelectionChange={setSelectionDraft}
+                    months={selectedMonths}
+                    onMonthsChange={setMonthsDraft}
                   />
                 )}
                 {section === "models" && (

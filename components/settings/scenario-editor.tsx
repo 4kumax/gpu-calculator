@@ -8,9 +8,11 @@ type Props = {
   onChange: (config: AppConfig) => void;
   selectedTaskIds: string[];
   onTaskSelectionChange: (ids: string[]) => void;
+  months: number;
+  onMonthsChange: (months: number) => void;
 };
 type NumericKey = {
-  [K in keyof ScenarioInput]: ScenarioInput[K] extends number ? K : never;
+  [K in keyof ScenarioInput]-?: ScenarioInput[K] extends number ? K : never;
 }[keyof ScenarioInput];
 const workloadFields: Array<{
   key: NumericKey;
@@ -64,6 +66,8 @@ export function ScenarioPresetsEditor({
   onChange,
   selectedTaskIds,
   onTaskSelectionChange,
+  months,
+  onMonthsChange,
 }: Props) {
   const selected = { input: calculationDefaults(config) };
   const input = (patch: Partial<ScenarioInput>) =>
@@ -154,14 +158,12 @@ export function ScenarioPresetsEditor({
             }
           />
           <NumberField
-            label="Горизонт сравнения, лет"
-            value={selected.input.years}
+            label="Срок расчёта, месяцев"
+            value={months}
             min={1}
-            max={5}
+            max={120}
             step={1}
-            onChange={(value) =>
-              input({ years: value ?? selected.input.years })
-            }
+            onChange={(value) => onMonthsChange(value ?? months)}
           />
           <SelectField
             label="Резерв оборудования"

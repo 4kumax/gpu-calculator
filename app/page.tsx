@@ -11,6 +11,11 @@ import {
 } from "lucide-react";
 import { useConfig } from "@/hooks/use-config";
 import { useTaskSelection } from "@/hooks/use-task-selection";
+import { useCalculationHorizon } from "@/hooks/use-calculation-horizon";
+import { calculationMonths } from "@/lib/horizon";
+import { applyScenarioSelection } from "@/lib/scenario-selection";
+import { HORIZON_CHANGE_EVENT } from "@/lib/calculation-horizon";
+import { TASK_SELECTION_EVENT } from "@/lib/task-selection";
 import { compareDeployments, type ComparisonRow } from "@/lib/comparison";
 import { calculate } from "@/lib/calculator";
 import {
@@ -24,6 +29,7 @@ import {
 import { ExecutiveComparison } from "@/components/executive-comparison";
 import { ScenarioManager } from "@/components/scenario-manager";
 import { TaskSelector } from "@/components/task-selector";
+import { NumberField } from "@/components/number-field";
 
 const VIEW_STORAGE_KEY = "gpu-calculator:executive-view:v4";
 type SelectedChoice = { id: string; scope: string };
@@ -31,6 +37,12 @@ type SelectedChoice = { id: string; scope: string };
 export default function CalculatorPage() {
   const store = useConfig();
   const taskSelection = useTaskSelection(
+    store.config,
+    store.loaded &&
+      store.status !== "authentication-required" &&
+      store.status !== "error",
+  );
+  const horizon = useCalculationHorizon(
     store.config,
     store.loaded &&
       store.status !== "authentication-required" &&
@@ -49,8 +61,9 @@ export default function CalculatorPage() {
       snapshot?.input ?? {
         ...calculationDefaults(store.config),
         taskIds: taskSelection.taskIds,
+        months: horizon.months,
       },
-    [snapshot, store.config, taskSelection.taskIds],
+    [snapshot, store.config, taskSelection.taskIds, horizon.months],
   );
   // A manual comparison belongs to one exact task set, workload and catalogue.
   // Changing those inputs must never keep a previously suitable model selected.
@@ -67,6 +80,7 @@ export default function CalculatorPage() {
   useEffect(() => {
     if (
       !store.loaded ||
+      !horizon.loaded ||
       store.status === "authentication-required" ||
       initialized
     )
@@ -84,7 +98,12 @@ export default function CalculatorPage() {
           typeof data.selectionScope === "string"
         )
           setChoice({ id: data.selectedId, scope: data.selectionScope });
-        if (data.snapshot) {
+        if (data.snapshot && data.dashboardVersion !== 1) {
+          localStorage.setItem(`${VIEW_STORAGE_KEY}:before-dashboard`, raw);
+          setMessage(
+            `Открыт новый расчёт на ${horizon.months} месяцев. Прежние сохранённые варианты доступны ниже.`,
+          );
+        } else if (data.snapshot) {
           const parsed = parseScenario(data.snapshot);
           if (!parsed.value) throw new Error(parsed.errors.join(" "));
           setSnapshot(parsed.value);
@@ -99,28 +118,34 @@ export default function CalculatorPage() {
       );
     }
     setInitialized(true);
-  }, [store.loaded, store.status, initialized]);
+  }, [store.loaded, store.status, initialized, horizon.loaded, horizon.months]);
 
   useEffect(() => {
     if (
       !initialized ||
       !taskSelection.loaded ||
+      !horizon.loaded ||
       taskSelection.error ||
+      horizon.error ||
       !snapshot ||
-      JSON.stringify([...snapshot.input.taskIds].sort()) ===
-        JSON.stringify([...taskSelection.taskIds].sort())
+      (JSON.stringify([...snapshot.input.taskIds].sort()) ===
+        JSON.stringify([...taskSelection.taskIds].sort()) &&
+        calculationMonths(snapshot.input) === horizon.months)
     )
       return;
     setSnapshot(null);
     setChoice(null);
     setMessage(
-      "Выбор задач изменён. Расчёт использует текущие параметры; сохранённый вариант остался без изменений.",
+      "Условия расчёта изменены. Используются текущие параметры; сохранённый вариант остался без изменений.",
     );
   }, [
     initialized,
     taskSelection.loaded,
     taskSelection.error,
     taskSelection.taskIds,
+    horizon.loaded,
+    horizon.months,
+    horizon.error,
     snapshot,
   ]);
 
@@ -129,6 +154,7 @@ export default function CalculatorPage() {
       !initialized ||
       !taskSelection.loaded ||
       taskSelection.error ||
+      horizon.error ||
       recovery ||
       store.status === "error" ||
       store.status === "authentication-required"
@@ -139,6 +165,7 @@ export default function CalculatorPage() {
       localStorage.setItem(
         VIEW_STORAGE_KEY,
         JSON.stringify({
+          dashboardVersion: 1,
           selectedId: activeChoice?.id ?? null,
           selectionScope: activeChoice?.scope ?? null,
           snapshot,
@@ -153,6 +180,7 @@ export default function CalculatorPage() {
     initialized,
     taskSelection.loaded,
     taskSelection.error,
+    horizon.error,
     choice,
     scope,
     snapshot,
@@ -225,10 +253,37 @@ export default function CalculatorPage() {
     setChoice(null);
   };
   const loadSnapshot = (scenario: Scenario) => {
-    if (!taskSelection.setTaskIds(scenario.input.taskIds)) return;
+    let selection: ReturnType<typeof applyScenarioSelection>;
+    try {
+      selection = applyScenarioSelection(window.localStorage, store.config, {
+        months: calculationMonths(scenario.input),
+        taskIds: scenario.input.taskIds,
+      });
+    } catch {
+      setError(
+        "Не удалось открыть сохранённый вариант. Проверьте доступ к хранилищу браузера.",
+      );
+      return;
+    }
+    if (!selection.ok) {
+      setError(selection.error || "Не удалось открыть сохранённый вариант.");
+      return;
+    }
+    window.dispatchEvent(new Event(HORIZON_CHANGE_EVENT));
+    window.dispatchEvent(new Event(TASK_SELECTION_EVENT));
+    setError("");
     setSnapshot(scenario);
     setChoice(null);
     setMessage("");
+  };
+  const changeMonths = (months: number) => {
+    if (!horizon.setMonths(months)) return;
+    if (snapshot)
+      setMessage(
+        "Срок изменён для нового расчёта по текущему каталогу. Сохранённый вариант остался без изменений.",
+      );
+    setSnapshot(null);
+    setChoice(null);
   };
   const exportCalculation = () => {
     try {
@@ -267,7 +322,7 @@ export default function CalculatorPage() {
         </div>
       </main>
     );
-  if (!store.loaded || !initialized || !taskSelection.loaded)
+  if (!store.loaded || !initialized || !taskSelection.loaded || !horizon.loaded)
     return (
       <main className="executive-shell">
         <div className="empty-state" role="status">
@@ -284,15 +339,40 @@ export default function CalculatorPage() {
           <h1>ИИ для вашего бизнеса</h1>
           <p>Выберите задачи. Сравните подходящие модели, GPU и стоимость.</p>
         </div>
-        <Link className="settings-shortcut" href="/settings">
-          <SlidersHorizontal size={16} />
-          Параметры
-        </Link>
+        <div className="dashboard-horizon">
+          <NumberField
+            label="Срок расчёта, месяцев"
+            value={calculationMonths(input)}
+            onChange={changeMonths}
+            min={1}
+            max={120}
+          />
+          <div
+            className="horizon-presets"
+            role="group"
+            aria-label="Быстрый выбор срока"
+          >
+            {[36, 48, 60].map((months) => (
+              <button
+                key={months}
+                type="button"
+                aria-pressed={calculationMonths(input) === months}
+                onClick={() => changeMonths(months)}
+              >
+                {months} мес.
+              </button>
+            ))}
+          </div>
+          <Link className="settings-shortcut" href="/settings">
+            <SlidersHorizontal size={16} />
+            Параметры
+          </Link>
+        </div>
       </header>
-      {(error || taskSelection.error) && (
+      {(error || taskSelection.error || horizon.error) && (
         <div className="error-box" role="alert">
-          <p>{error || taskSelection.error}</p>
-          {taskSelection.error && (
+          <p>{error || taskSelection.error || horizon.error}</p>
+          {(taskSelection.error || horizon.error) && (
             <Link href="/settings">Восстановить выбор в Параметрах</Link>
           )}
           {recovery && (
@@ -380,7 +460,7 @@ export default function CalculatorPage() {
               <span>
                 {snapshot
                   ? "Сохранённые параметры и цены"
-                  : `Единый расчёт · ${input.years * 12} месяцев · модель должна подходить для всех задач`}
+                  : `Единый расчёт · ${calculationMonths(input)} месяцев · ${input.hoursMonth} часов в месяц`}
               </span>
             </div>
             <div className="context-actions">

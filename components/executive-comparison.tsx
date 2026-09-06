@@ -1,5 +1,6 @@
 "use client";
 
+import { calculationMonths } from "@/lib/horizon";
 import { useState } from "react";
 import { ArrowDown, ArrowUpRight, Check, ChevronDown } from "lucide-react";
 import {
@@ -10,6 +11,7 @@ import {
 } from "@/lib/calculator";
 import type { AppConfig } from "@/lib/config";
 import type { ComparisonRow, DeploymentComparison } from "@/lib/comparison";
+import { DecisionCharts } from "@/components/decision-charts";
 import { CostAnalysis } from "@/components/cost-analysis";
 import { CalculationParameters } from "@/components/calculation-parameters";
 
@@ -35,7 +37,7 @@ export function ExecutiveComparison({
   const [costsOpen, setCostsOpen] = useState(false);
   const [rowDetail, setRowDetail] = useState<string | null>(null);
   const result = selected?.result;
-  const months = input.years * 12;
+  const months = calculationMonths(input);
   const paidHours =
     input.rentalMode === "dedicated-node" ? HOURS_PER_MONTH : input.hoursMonth;
   const activeModelId = config.models.some(
@@ -167,6 +169,10 @@ export function ExecutiveComparison({
           <h2>Подходящий вариант пока не найден</h2>
           <p>Сравните ограничения ниже или измените сценарий в параметрах.</p>
         </div>
+      )}
+
+      {result && (
+        <DecisionCharts config={config} input={input} result={result} />
       )}
 
       <section className="options-card" aria-labelledby="options-title">

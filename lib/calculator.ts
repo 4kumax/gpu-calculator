@@ -11,6 +11,7 @@ import {
   createEstimatedProfile,
   modelWeightGb,
 } from "@/lib/config";
+import { calculationMonths } from "@/lib/horizon";
 
 /** Planning month: 30 days of continuous operation and dedicated rental billing. */
 export const HOURS_PER_MONTH = 720;
@@ -20,6 +21,9 @@ export type CalculationInput = {
   modelId: string | "auto";
   gpuId: string | "auto";
   hoursMonth: number;
+  /** Authoritative horizon, from 1 to 120 months; supports partial years. */
+  months?: number;
+  /** Legacy compatibility field; ignored for the horizon when months is provided. */
   years: number;
   concurrency: number;
   reserveMode: "none" | "nplus1";
@@ -267,6 +271,7 @@ function validateInput(input: CalculationInput): void {
     );
   if (!Number.isSafeInteger(input.years) || input.years < 1 || input.years > 5)
     throw new Error("Горизонт расчёта должен быть целым числом от 1 до 5 лет.");
+  calculationMonths(input);
   if (
     !Number.isSafeInteger(input.concurrency) ||
     input.concurrency < 1 ||
@@ -608,11 +613,11 @@ function costsAtHours(
 ) {
   const { gpu, nodes, workloadNodes, reserveNodes, gpuCount } = plan;
   const a = config.assumptions;
-  const months = input.years * 12;
+  const months = calculationMonths(input);
   const capex = nodes * gpu.nodePriceRub;
   const fitout = (capex * a.fitoutPctCapex) / 100;
   const contingency = (capex * a.contingencyPct) / 100;
-  const support = ((capex * a.supportPctCapexYear) / 100) * input.years;
+  const support = ((capex * a.supportPctCapexYear) / 100) * (months / 12);
   const averagePowerFactor =
     a.idlePowerPct / 100 +
     ((1 - a.idlePowerPct / 100) * hoursMonth) / HOURS_PER_MONTH;
@@ -1030,7 +1035,7 @@ export function cumulativeCashflow(
   result = calculate(config, input),
 ): CashflowPoint[] {
   const cost = estimateCosts(config, input, result.plan);
-  const months = input.years * 12;
+  const months = calculationMonths(input);
   const upfront = cost.buy.equipment + cost.buy.fitout + cost.buy.contingency;
   const monthlyOperating =
     (cost.buy.support +

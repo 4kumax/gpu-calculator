@@ -5,6 +5,8 @@ import { JSDOM } from "jsdom";
 import { calculate, compactRub, formatRub } from "./calculator";
 import { compareDeployments, type ComparisonRow } from "./comparison";
 import { cloneDefaultConfig, STORAGE_KEY, type AppConfig } from "./config";
+import { calculationMonths } from "./horizon";
+import { HORIZON_STORAGE_KEY } from "./calculation-horizon";
 import { TASK_SELECTION_KEY } from "./task-selection";
 import {
   createScenario,
@@ -116,14 +118,14 @@ function RoutedPages() {
   );
 }
 
-test("главная показывает двенадцать исходных задач с множественным выбором без технического ввода", async () => {
+test("главная показывает 18 задач, включая все исходные, с множественным выбором без технического ввода", async () => {
   const config = cloneDefaultConfig();
   await renderPage(config);
   const region = ui.screen.getByRole("region", {
     name: "Сценарии использования",
   });
   const choices = ui.within(region).getAllByRole("checkbox");
-  assert.equal(choices.length, 12);
+  assert.equal(choices.length, 18);
   for (const title of [
     "Корпоративный поиск и ответы",
     "Извлечение и классификация",
@@ -137,6 +139,12 @@ test("главная показывает двенадцать исходных 
     "Исследовательские и инженерные агенты",
     "Сверхдлинный контекст",
     "Предельные мультимодальные задачи",
+    "Поддержка клиентов",
+    "Продажи и CRM",
+    "HR и адаптация сотрудников",
+    "Финансовый контроль",
+    "Комплаенс и внутренний аудит",
+    "Перевод и локализация",
   ])
     assert.ok(ui.within(region).getByRole("checkbox", { name: title }));
   assert.deepEqual(
@@ -145,12 +153,104 @@ test("главная показывает двенадцать исходных 
   );
   assert.equal(ui.screen.queryByText("Пилот ИИ-ассистента"), null);
   assert.equal(ui.screen.queryByText("Корпоративный масштаб"), null);
-  assert.equal(ui.screen.queryByRole("spinbutton"), null);
+  assert.equal(
+    (
+      ui.screen.getByRole("spinbutton", {
+        name: "Срок расчёта, месяцев",
+      }) as HTMLInputElement
+    ).value,
+    "36",
+  );
+  assert.equal(ui.screen.getAllByRole("spinbutton").length, 1);
   assert.ok(ui.screen.getByRole("link", { name: "Параметры" }));
   const card = decisionCard();
   assert.ok(ui.within(card).getByText("Покупка и владение"));
   assert.ok(ui.within(card).getByText("Аренда и обслуживание"));
   assert.match(card.textContent!, /₽/);
+});
+
+test("срок на главной пересчитывает карточку и график, сохраняется и совпадает с Параметрами", async () => {
+  const config = cloneDefaultConfig();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  globalThis.fetch = async () =>
+    Response.json({ configured: false, authenticated: false, role: null });
+  ui.render(createElement(RoutedPages));
+  await ui.screen.findByRole("heading", { name: "ИИ для вашего бизнеса" });
+  const field = ui.screen.getByRole("spinbutton", {
+    name: "Срок расчёта, месяцев",
+  }) as HTMLInputElement;
+  ui.fireEvent.change(field, { target: { value: "18" } });
+  const expected = compareDeployments(config, {
+    ...scenarioInput(config, config.defaultScenarioId),
+    months: 18,
+  }).recommended!;
+  assert.ok(decisionCard().textContent?.includes("Горизонт · 18 мес."));
+  assert.ok(
+    decisionCard().textContent?.includes(money(expected.result!.rentTco)),
+  );
+  const slider = ui.screen.getByRole("slider", {
+    name: "Месяц на графике накопленных затрат",
+  }) as HTMLInputElement;
+  assert.equal(slider.max, "18");
+  assert.equal(slider.value, "18");
+  assert.equal(
+    JSON.parse(localStorage.getItem(HORIZON_STORAGE_KEY)!).months,
+    18,
+  );
+  ui.fireEvent.change(field, { target: { value: "0" } });
+  assert.equal(field.getAttribute("aria-invalid"), "true");
+  assert.ok(decisionCard().textContent?.includes("Горизонт · 18 мес."));
+  ui.fireEvent.blur(field);
+  assert.equal(field.value, "18");
+  ui.fireEvent.click(ui.screen.getByRole("link", { name: "Параметры" }));
+  const settingsField = await ui.screen.findByRole("spinbutton", {
+    name: "Срок расчёта, месяцев",
+  });
+  assert.equal((settingsField as HTMLInputElement).value, "18");
+  ui.fireEvent.click(
+    ui.screen.getByRole("link", { name: "Вернуться к сравнению" }),
+  );
+  await ui.screen.findByRole("heading", { name: "ИИ для вашего бизнеса" });
+  assert.ok(decisionCard().textContent?.includes("Горизонт · 18 мес."));
+  ui.fireEvent.click(ui.screen.getByRole("button", { name: "60 мес." }));
+  assert.ok(decisionCard().textContent?.includes("Горизонт · 60 мес."));
+  assert.equal((ui.screen.getByRole("slider") as HTMLInputElement).max, "60");
+});
+
+test("прежний срок 12 месяцев и автоматически открытый снимок уступают новому сроку 36 без потери архива", async () => {
+  const config = cloneDefaultConfig();
+  config.catalogUpdateVersion = 1;
+  for (const preset of config.scenarioPresets) {
+    preset.input.years = 1;
+    delete preset.input.months;
+  }
+  const saved = createScenario(
+    "Прежний расчёт",
+    config,
+    scenarioInput(config, config.defaultScenarioId),
+  );
+  const library = JSON.stringify([saved]);
+  const viewKey = "gpu-calculator:executive-view:v4";
+  const previousView = JSON.stringify({ snapshot: saved, selectedId: null });
+  localStorage.setItem(SCENARIO_STORAGE_KEY, library);
+  localStorage.setItem(viewKey, previousView);
+  await renderPage(config);
+  assert.ok(decisionCard().textContent?.includes("Горизонт · 36 мес."));
+  assert.equal(
+    (ui.screen.getByRole("spinbutton") as HTMLInputElement).value,
+    "36",
+  );
+  assert.equal(
+    localStorage.getItem(`${viewKey}:before-dashboard`),
+    previousView,
+  );
+  assert.equal(localStorage.getItem(SCENARIO_STORAGE_KEY), library);
+  ui.fireEvent.click(
+    ui.screen.getByRole("button", { name: "Сохранить вариант" }),
+  );
+  ui.fireEvent.click(await ui.screen.findByRole("button", { name: "Открыть" }));
+  assert.ok(decisionCard().textContent?.includes("Горизонт · 12 мес."));
+  assert.equal(localStorage.getItem(SCENARIO_STORAGE_KEY), library);
 });
 
 test("добавление предельной задачи требует Kimi и её снятие восстанавливает прежний подходящий вариант", async () => {
@@ -177,7 +277,9 @@ test("добавление предельной задачи требует Kimi
   assert.ok(card.textContent?.includes(money(expected.result.buyTco)));
   assert.ok(card.textContent?.includes(money(expected.result.rentTco)));
   assert.equal(ui.within(card).queryByRole("heading", { name: /Llama/ }), null);
-  assert.ok(card.textContent?.includes(`Горизонт · ${input.years * 12} мес.`));
+  assert.ok(
+    card.textContent?.includes(`Горизонт · ${calculationMonths(input)} мес.`),
+  );
   const details = document.querySelector<HTMLDetailsElement>(
     "#calculation-details",
   )!;
@@ -205,7 +307,7 @@ test("добавление предельной задачи требует Kimi
     `${input.inputTokens!.toLocaleString("ru-RU")} токенов`,
   );
   assert.equal(
-    ui.screen.queryByRole("spinbutton"),
+    ui.within(details).queryByRole("spinbutton"),
     null,
     "expanded explanation remains read-only",
   );
@@ -214,7 +316,7 @@ test("добавление предельной задачи требует Kimi
   assert.equal(decisionCard().textContent, previous);
 });
 
-test("пустой выбор не выдаёт рекомендацию, выбор всех отмечает исходные двенадцать задач", async () => {
+test("пустой выбор не выдаёт рекомендацию, выбор всех отмечает все 18 задач", async () => {
   const config = cloneDefaultConfig();
   await renderPage(config);
   ui.fireEvent.click(ui.screen.getByRole("button", { name: "Снять выбор" }));
@@ -272,7 +374,7 @@ test("переход в Параметры сохраняет выбранные
     config.tasks.filter((task) =>
       ui.screen.queryByRole("checkbox", { name: task.title }),
     ).length,
-    12,
+    18,
   );
   ui.fireEvent.click(taskCheckbox("Предельные мультимодальные задачи"));
   ui.fireEvent.change(
@@ -282,8 +384,8 @@ test("переход в Параметры сохраняет выбранные
     { target: { value: "320" } },
   );
   ui.fireEvent.change(
-    ui.screen.getByRole("spinbutton", { name: "Горизонт сравнения, лет" }),
-    { target: { value: "2" } },
+    ui.screen.getByRole("spinbutton", { name: "Срок расчёта, месяцев" }),
+    { target: { value: "30" } },
   );
   assert.deepEqual(
     JSON.parse(localStorage.getItem(TASK_SELECTION_KEY)!).taskIds,
@@ -302,7 +404,7 @@ test("переход в Параметры сохраняет выбранные
   const input = scenarioInput(saved, saved.defaultScenarioId);
   assert.deepEqual(input.taskIds, ["search", "contracts", "frontier"]);
   assert.equal(input.hoursMonth, 320);
-  assert.equal(input.years, 2);
+  assert.equal(input.months, 30);
   const expected = compareDeployments(saved, input).recommended;
   assert.ok(expected?.result);
   ui.fireEvent.click(
@@ -318,7 +420,7 @@ test("переход в Параметры сохраняет выбранные
   );
   assert.ok(card.textContent?.includes(money(expected.result.buyTco)));
   assert.ok(card.textContent?.includes(money(expected.result.rentTco)));
-  assert.ok(card.textContent?.includes("Горизонт · 24 мес."));
+  assert.ok(card.textContent?.includes("Горизонт · 30 мес."));
 });
 
 test("изменение задач в Параметрах закрывает снимок на главной и сохраняет исходный сценарий неизменным", async () => {
@@ -331,6 +433,7 @@ test("изменение задач в Параметрах закрывает �
       taskIds: ["search", "summary"],
       hoursMonth: 40,
       years: 1,
+      months: 12,
     },
     new Date("2026-09-01T10:00:00Z"),
   );
@@ -342,6 +445,7 @@ test("изменение задач в Параметрах закрывает �
   )!;
   defaults.input.hoursMonth = 320;
   defaults.input.years = 2;
+  defaults.input.months = 24;
   current.gpus.forEach((gpu) => {
     gpu.nodePriceRub *= 2;
     gpu.rentPerGpuHourRub *= 2;
@@ -365,6 +469,10 @@ test("изменение задач в Параметрах закрывает �
   assert.deepEqual(selectedTasks(current), ["search", "summary"]);
   ui.fireEvent.click(taskCheckbox("Пересказы и отчёты"));
   ui.fireEvent.click(taskCheckbox("Договоры и закупки"));
+  ui.fireEvent.change(
+    ui.screen.getByRole("spinbutton", { name: "Срок расчёта, месяцев" }),
+    { target: { value: "24" } },
+  );
   ui.fireEvent.click(
     ui.screen.getByRole("button", { name: "Сохранить изменения" }),
   );

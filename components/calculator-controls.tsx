@@ -3,6 +3,7 @@
 import { Check } from "lucide-react";
 import { type AppConfig } from "@/lib/config";
 import { type CalculationInput } from "@/lib/calculator";
+import { calculationMonths } from "@/lib/horizon";
 import { NumberField } from "./number-field";
 
 export function CalculatorControls({
@@ -232,11 +233,11 @@ export function CalculatorControls({
             onChange={(hoursMonth) => onChange({ hoursMonth })}
           />
           <NumberField
-            label="Горизонт расчёта, лет"
-            value={input.years}
+            label="Срок расчёта, месяцев"
+            value={calculationMonths(input)}
             min={1}
-            max={5}
-            onChange={(years) => onChange({ years })}
+            max={120}
+            onChange={(months) => onChange({ months })}
           />
           <label className="field">
             <span>Резервирование</span>

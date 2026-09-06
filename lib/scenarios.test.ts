@@ -162,7 +162,7 @@ test("both former calculator versions require explicit migration and cannot expo
     assert.throws(() => scenarioReport(old), /требует явного пересчёта/);
     const migrated = migrateScenario(old, new Date("2026-09-07T00:00:00Z"));
     assert.ok(migrated.value, migrated.errors.join(" "));
-    assert.equal(migrated.value.calculatorVersion, "5.0.0");
+    assert.equal(migrated.value.calculatorVersion, CALCULATOR_VERSION);
     assert.equal(migrated.value.input.hoursMonth, 720);
     assert.notEqual(migrated.value.id, old.id);
     assert.equal(JSON.stringify(old), original);
@@ -193,4 +193,66 @@ test("explicit historical recalculation preserves shorter recorded workload, whi
   assert.equal(migrated.value?.input.rentalMode, "gpu-hour");
   assert.equal(defaultInput(config).hoursMonth, 720);
   assert.equal(defaultInput(config).rentalMode, "dedicated-node");
+});
+
+test("monthly horizons survive snapshot capture, report export and strict import", () => {
+  const config = cloneDefaultConfig();
+  for (const months of [18, 30, 36]) {
+    const scenario = createScenario(`${months} месяцев`, config, {
+      ...defaultInput(config),
+      years: 3,
+      months,
+    });
+    assert.equal(scenario.calculatorVersion, "5.1.0");
+    assert.equal(scenario.input.months, months);
+    const report = scenarioReport(scenario);
+    const restored = parseScenario(JSON.parse(JSON.stringify(report)));
+    assert.ok(restored.value, restored.errors.join(" "));
+    assert.equal(restored.value.input.months, months);
+    assert.equal(
+      scenarioReport(restored.value).result.buyTco,
+      report.result.buyTco,
+    );
+    assert.equal(
+      scenarioReport(restored.value).result.rentTco,
+      report.result.rentTco,
+    );
+  }
+  for (const months of [0, 18.5, 121, "18", null])
+    assert.equal(parseInput({ ...defaultInput(config), months }).value, null);
+});
+
+test("version 5.0 snapshots with legacy years reproduce unchanged without a migration or version relabel", () => {
+  const config = cloneDefaultConfig();
+  const { months, ...legacyInput } = defaultInput(config);
+  const current = createScenario("Ранее согласовано", config, {
+    ...legacyInput,
+    years: 2,
+  });
+  const { months: capturedMonths, ...frozenLegacyInput } = current.input;
+  const old = {
+    ...current,
+    calculatorVersion: "5.0.0",
+    input: frozenLegacyInput,
+  };
+  const raw = JSON.stringify(old);
+  const originalCosts = scenarioReport(current).result;
+  const restored = parseScenario(old);
+  assert.ok(restored.value, restored.errors.join(" "));
+  assert.equal(restored.value.calculatorVersion, "5.0.0");
+  assert.equal(restored.value.input.months, undefined);
+  assert.equal(restored.value.input.years, 2);
+  assert.equal(
+    scenarioReport(restored.value).result.buyTco,
+    originalCosts.buyTco,
+  );
+  assert.equal(
+    scenarioReport(restored.value).result.rentTco,
+    originalCosts.rentTco,
+  );
+  assert.ok(readScenarios(JSON.stringify([old])).value);
+  assert.equal(JSON.stringify(old), raw);
+  const ambiguous = { ...old, input: { ...old.input, months: 18 } };
+  assert.equal(parseScenario(ambiguous).value, null);
+  assert.throws(() => scenarioReport(ambiguous), /требует явного пересчёта/);
 });

@@ -10,6 +10,7 @@ import {
   HOURS_PER_MONTH,
 } from "./calculator";
 import { cloneDefaultConfig, DEFAULT_CONFIG, validateConfig } from "./config";
+import { calculationMonths } from "./horizon";
 
 const baseInput: CalculationInput = {
   taskIds: [],
@@ -27,6 +28,21 @@ const withInput = (patch: Partial<CalculationInput>): CalculationInput => ({
   ...baseInput,
   ...patch,
 });
+
+const originalTaskIds = [
+  "search",
+  "extract",
+  "summary",
+  "contracts",
+  "estimates",
+  "management",
+  "incidents",
+  "coding",
+  "vision",
+  "agents",
+  "long",
+  "frontier",
+];
 
 test("исходный каталог проходит строгую валидацию", () => {
   assert.deepEqual(validateConfig(DEFAULT_CONFIG), []);
@@ -260,10 +276,11 @@ test("валидатор отвергает пустые ID, дробные ко
   assert.match(errors, /assumptions\.idlePowerPct/);
 });
 
-test("автовыбор остаётся допустимым для всех 4096 комбинаций задач", () => {
+test("автовыбор остаётся допустимым для всех 4096 комбинаций исходных 12 задач", () => {
   const taskIds = DEFAULT_CONFIG.tasks
-    .filter((task) => task.enabled)
+    .filter((task) => task.enabled && originalTaskIds.includes(task.id))
     .map((task) => task.id);
+  assert.equal(taskIds.length, 12);
   for (let mask = 0; mask < 2 ** taskIds.length; mask += 1) {
     const selected = taskIds.filter((_, index) => mask & (1 << index));
     for (const priority of ["cost", "balance", "quality"] as const) {
@@ -285,6 +302,38 @@ test("автовыбор остаётся допустимым для всех 4
         result.model.id,
         `mask=${mask}, priority=${priority}`,
       );
+    }
+  }
+});
+
+test("new use cases are admissible individually, together and crossed with original requirements", () => {
+  const addedTaskIds = DEFAULT_CONFIG.tasks
+    .filter((task) => task.enabled && !originalTaskIds.includes(task.id))
+    .map((task) => task.id);
+  assert.equal(addedTaskIds.length, 6);
+  const combinations = [
+    ...addedTaskIds.map((id) => [id]),
+    addedTaskIds,
+    ...addedTaskIds.map((id) => [id, "contracts", "agents"]),
+    ...addedTaskIds.map((id) => [id, "frontier"]),
+    [...originalTaskIds, ...addedTaskIds],
+  ];
+  for (const taskIds of combinations) {
+    for (const priority of ["cost", "balance", "quality"] as const) {
+      const result = calculate(
+        DEFAULT_CONFIG,
+        withInput({ taskIds, priority }),
+      );
+      assert.equal(
+        result.selectionValid,
+        true,
+        `${taskIds.join(",")}/${priority}`,
+      );
+      assert.ok(
+        result.eligibleModels.some((model) => model.id === result.model.id),
+      );
+      if (taskIds.includes("frontier"))
+        assert.equal(result.model.id, "kimi-k3");
     }
   }
 });
@@ -953,4 +1002,70 @@ test("Kimi eight-GPU annual budget uses continuous billing rather than the forme
   assert.equal(result.buyTco, 126_153_504);
   assert.equal(result.rent.compute, 93_312_000);
   assert.equal(result.rentTco, 103_617_600);
+});
+
+test("18, 30 and 36-month horizons charge CAPEX once and prorate support, operation and rental", () => {
+  const { config, input } = financialFixture();
+  config.assumptions.supportPctCapexYear = 10;
+  config.assumptions.residualValuePct = 20;
+  for (const months of [18, 30, 36]) {
+    const scenario = { ...input, years: 5, months };
+    const result = calculate(config, scenario);
+    assert.equal(calculationMonths(scenario), months);
+    assert.equal(result.buy.equipment, 120);
+    assert.equal(result.buy.support, months);
+    assert.equal(result.buy.electricity, 10 * months);
+    assert.equal(result.buy.residual, 24);
+    assert.equal(result.buyTco, 120 + months + 10 * months - 24);
+    assert.equal(result.rentTco, 20 * months);
+    assert.equal(result.rentMonthly, 20);
+    const cashflow = cumulativeCashflow(config, scenario, result);
+    assert.equal(cashflow.length, months + 1);
+    assert.equal(cashflow[0].buyCumulative, 120);
+    assert.equal(cashflow[0].rentCumulative, 0);
+    assert.equal(cashflow[months].month, months);
+    assert.ok(Math.abs(cashflow[months].buyCumulative - result.buyTco) < 1e-9);
+    assert.ok(
+      Math.abs(cashflow[months].rentCumulative - result.rentTco) < 1e-9,
+    );
+    const sensitivity = calculateSensitivity(config, scenario, result);
+    assert.equal(sensitivity.cashflow.length, months + 1);
+    assert.equal(sensitivity.scenarios[1].buyTco, result.buyTco);
+    assert.equal(sensitivity.scenarios[1].rentTco, result.rentTco);
+  }
+});
+
+test("monthly horizon boundaries and legacy fallback are explicit and independent of legacy years", () => {
+  const { config, input } = financialFixture();
+  assert.equal(calculationMonths({ years: 3 }), 36);
+  assert.equal(calculationMonths({ years: 3, months: 18 }), 18);
+  for (const months of [1, 120]) {
+    const result = calculate(config, { ...input, months });
+    assert.equal(result.rentTco, result.rentMonthly * months);
+    assert.equal(
+      cumulativeCashflow(config, { ...input, months }, result).length,
+      months + 1,
+    );
+  }
+  for (const months of [0, -1, 1.5, 121, NaN, Infinity]) {
+    assert.throws(
+      () => calculationMonths({ years: 3, months }),
+      /1 до 120 месяцев/,
+    );
+    assert.throws(
+      () => calculate(config, { ...input, months }),
+      /1 до 120 месяцев/,
+    );
+  }
+  for (const years of [1, 2, 3, 4, 5]) {
+    const legacy = calculate(config, { ...input, years });
+    const explicit = calculate(config, {
+      ...input,
+      years: 1,
+      months: years * 12,
+    });
+    assert.equal(legacy.buyTco, explicit.buyTco);
+    assert.equal(legacy.rentTco, explicit.rentTco);
+    assert.equal(legacy.breakEvenHoursMonth, explicit.breakEvenHoursMonth);
+  }
 });

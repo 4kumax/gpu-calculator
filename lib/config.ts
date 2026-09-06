@@ -159,6 +159,8 @@ export type ScenarioInput = {
   gpuId: string;
   hoursMonth: number;
   years: number;
+  /** Authoritative horizon; legacy snapshots fall back to years × 12. */
+  months?: number;
   concurrency: number;
   reserveMode: "none" | "nplus1";
   largeModelSharePct: number;
@@ -183,7 +185,7 @@ export type AppConfig = {
   schemaVersion: 4;
   catalogVersion: string;
   /** One-time live-catalog updates; absent in older immutable snapshots. */
-  catalogUpdateVersion?: 1;
+  catalogUpdateVersion?: 1 | 2;
   revision: number;
   updatedAt: string;
   assumptions: Assumptions;
@@ -1567,34 +1569,134 @@ function normalizeGeneratedCalculationDefaults(config: AppConfig): boolean {
   return true;
 }
 
-/** Apply the user's 720-hour always-on policy once; never overwrite later explicit edits. */
+export function createAdditionalBusinessTasks(): TaskRule[] {
+  return [
+    {
+      id: "customer-support",
+      enabled: true,
+      title: "Поддержка клиентов",
+      description: "Ответы на обращения, поиск решений и помощь операторам",
+      category: "Клиенты",
+      minQualityTier: 1,
+      minContextK: 32,
+      requiredCapabilities: ["текст"],
+    },
+    {
+      id: "sales-crm",
+      enabled: true,
+      title: "Продажи и CRM",
+      description: "Подготовка предложений, разбор встреч и заполнение CRM",
+      category: "Продажи",
+      minQualityTier: 2,
+      minContextK: 64,
+      requiredCapabilities: ["текст", "инструменты"],
+    },
+    {
+      id: "hr-onboarding",
+      enabled: true,
+      title: "HR и адаптация сотрудников",
+      description:
+        "Ответы по кадровым правилам и сопровождение новых сотрудников",
+      category: "Сотрудники",
+      minQualityTier: 1,
+      minContextK: 32,
+      requiredCapabilities: ["текст"],
+    },
+    {
+      id: "financial-control",
+      enabled: true,
+      title: "Финансовый контроль",
+      description:
+        "Сопоставление документов, поиск расхождений и подготовка пояснений",
+      category: "Финансы",
+      minQualityTier: 3,
+      minContextK: 128,
+      requiredCapabilities: ["текст"],
+    },
+    {
+      id: "compliance-audit",
+      enabled: true,
+      title: "Комплаенс и внутренний аудит",
+      description:
+        "Проверка соответствия внутренним правилам и сбор материалов для аудита",
+      category: "Контроль",
+      minQualityTier: 3,
+      minContextK: 128,
+      requiredCapabilities: ["текст"],
+    },
+    {
+      id: "translation",
+      enabled: true,
+      title: "Перевод и локализация",
+      description:
+        "Перевод документов и адаптация текстов с учётом терминологии",
+      category: "Коммуникации",
+      minQualityTier: 2,
+      minContextK: 64,
+      requiredCapabilities: ["текст"],
+    },
+  ];
+}
+
+/** Apply each live-catalog policy once; preserve later edits and historical snapshots. */
 function applyCatalogUpdate(config: AppConfig): {
   updated: boolean;
+  alwaysOnUpdated: boolean;
   h20Added: boolean;
+  monthsUpdated: boolean;
+  tasksAdded: number;
 } {
-  if (config.catalogUpdateVersion === 1)
-    return { updated: false, h20Added: false };
+  const result = {
+    updated: false,
+    alwaysOnUpdated: false,
+    h20Added: false,
+    monthsUpdated: false,
+    tasksAdded: 0,
+  };
+  if (config.catalogUpdateVersion === 2) return result;
   const current = config.scenarioPresets.find(
     (preset) => preset.id === config.defaultScenarioId,
   );
-  if (current)
-    current.input = {
-      ...current.input,
-      hoursMonth: 720,
-      rentalMode: "dedicated-node",
-      reserveRentalMode: "always-on",
-    };
-  config.assumptions.defaultHoursMonth = 720;
-  const existingH20 = config.gpus.some(
-    (gpu) =>
-      gpu.id === "h20" ||
-      (gpu.vendor === "NVIDIA" &&
-        gpu.memoryGb === 96 &&
-        /(^|\W)H20(\W|$)/i.test(gpu.name)),
-  );
-  if (!existingH20) config.gpus.push(createH20Gpu());
-  config.catalogUpdateVersion = 1;
-  return { updated: true, h20Added: !existingH20 };
+  if (config.catalogUpdateVersion !== 1) {
+    if (current)
+      current.input = {
+        ...current.input,
+        hoursMonth: 720,
+        rentalMode: "dedicated-node",
+        reserveRentalMode: "always-on",
+      };
+    config.assumptions.defaultHoursMonth = 720;
+    const existingH20 = config.gpus.some(
+      (gpu) =>
+        gpu.id === "h20" ||
+        (gpu.vendor === "NVIDIA" &&
+          gpu.memoryGb === 96 &&
+          /(^|\W)H20(\W|$)/i.test(gpu.name)),
+    );
+    if (!existingH20) config.gpus.push(createH20Gpu());
+    result.alwaysOnUpdated = true;
+    result.h20Added = !existingH20;
+  }
+  if (current) current.input = { ...current.input, months: 36 };
+  for (const task of createAdditionalBusinessTasks()) {
+    if (!config.tasks.some((existing) => existing.id === task.id)) {
+      config.tasks.push(task);
+      result.tasksAdded++;
+    }
+  }
+  config.catalogUpdateVersion = 2;
+  result.updated = true;
+  result.monthsUpdated = true;
+  return result;
+}
+
+/** Draft shape is checked by its store first; business validation remains deferred until Save. */
+export function normalizeDraftCatalog(config: AppConfig): AppConfig {
+  const next = JSON.parse(JSON.stringify(config)) as AppConfig;
+  if (next.catalogUpdateVersion === undefined)
+    normalizeGeneratedCalculationDefaults(next);
+  applyCatalogUpdate(next);
+  return next;
 }
 
 function migrateV2(legacy: LegacyAppConfig): AppConfig {
@@ -1644,8 +1746,8 @@ const INITIAL_DEFAULT_CONFIG = migrateV2(LEGACY_DEFAULT_CONFIG);
 applyCatalogUpdate(INITIAL_DEFAULT_CONFIG);
 export const DEFAULT_CONFIG: AppConfig = {
   ...INITIAL_DEFAULT_CONFIG,
-  catalogVersion: "2026-09-06.4",
-  updatedAt: "2026-09-06T00:00:00.000Z",
+  catalogVersion: "2026-09-07.1",
+  updatedAt: "2026-09-07T00:00:00.000Z",
 };
 
 export function cloneDefaultConfig(): AppConfig {
@@ -1853,7 +1955,10 @@ const ASSESSMENT_RULES: Record<string, Rule> = {
   notes: string,
 };
 
-const SCENARIO_INPUT_RULES: Record<keyof ScenarioInput, Rule> = {
+const SCENARIO_INPUT_RULES: Record<
+  Exclude<keyof ScenarioInput, "months">,
+  Rule
+> = {
   taskIds: (value) =>
     Array.isArray(value) &&
     value.length <= 1000 &&
@@ -1926,7 +2031,7 @@ function validateVersion(value: unknown, version: 2 | 3 | 4): string[] {
       "config",
       rootRules,
       errors,
-      version === 4 ? { catalogUpdateVersion: enumeration([1]) } : {},
+      version === 4 ? { catalogUpdateVersion: enumeration([1, 2]) } : {},
       [
         "assumptions",
         "models",
@@ -2004,7 +2109,9 @@ function validateVersion(value: unknown, version: 2 | 3 | 4): string[] {
         for (const quote of ["purchaseQuote", "rentalQuote"])
           shape(entry[quote], `${path}.${quote}`, QUOTE_RULES, errors);
       if (key === "scenarioPresets")
-        shape(entry.input, `${path}.input`, SCENARIO_INPUT_RULES, errors);
+        shape(entry.input, `${path}.input`, SCENARIO_INPUT_RULES, errors, {
+          months: numberIn(1, 120, true),
+        });
       if (key === "deploymentProfiles" && entry.benchmark !== undefined)
         shape(entry.benchmark, `${path}.benchmark`, BENCHMARK_RULES, errors);
     }
@@ -2194,11 +2301,17 @@ export function parseConfig(
         : (cloned as AppConfig);
   const restoredTaskDefaults =
     version === 4 &&
-    config.catalogUpdateVersion !== 1 &&
+    config.catalogUpdateVersion === undefined &&
     !options.preserveCalculationDefaults &&
     normalizeGeneratedCalculationDefaults(config);
   const catalogUpdate = options.preserveCalculationDefaults
-    ? { updated: false, h20Added: false }
+    ? {
+        updated: false,
+        alwaysOnUpdated: false,
+        h20Added: false,
+        monthsUpdated: false,
+        tasksAdded: 0,
+      }
     : applyCatalogUpdate(config);
   const correctedBuiltinKimi =
     version < 4 &&
@@ -2241,9 +2354,19 @@ export function parseConfig(
     config,
     errors: [],
     warnings: [
-      ...(catalogUpdate.updated
+      ...(catalogUpdate.alwaysOnUpdated
         ? [
             "Для постоянной работы однократно установлены 720 часов в месяц, аренда выделенного узла и постоянная оплата резерва. Остальные пользовательские параметры сохранены.",
+          ]
+        : []),
+      ...(catalogUpdate.monthsUpdated
+        ? [
+            "Горизонт текущего расчёта однократно установлен на 36 месяцев. Последующие изменения срока сохраняются; исторические снимки не меняются.",
+          ]
+        : []),
+      ...(catalogUpdate.tasksAdded
+        ? [
+            `Добавлено сценариев использования: ${catalogUpdate.tasksAdded}. Требования к качеству и контексту являются плановыми правилами; существующие пользовательские сценарии сохранены.`,
           ]
         : []),
       ...(catalogUpdate.h20Added

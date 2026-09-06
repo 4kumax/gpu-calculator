@@ -1,5 +1,6 @@
 "use client";
 
+import { calculationMonths } from "@/lib/horizon";
 import { useMemo } from "react";
 import {
   calculateSensitivity,
@@ -47,7 +48,7 @@ export function CostAnalysis({
     1,
     ...points.flatMap((point) => [point.buyCumulative, point.rentCumulative]),
   );
-  const months = input.years * 12;
+  const months = calculationMonths(input);
   const x = (month: number) => 55 + (month / months) * 510;
   const y = (value: number) => 218 - (value / max) * 190;
   const selectedPoints = points.filter(

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   cloneDefaultConfig,
   createBusinessScenarioPresets,
+  createAdditionalBusinessTasks,
   parseConfig,
   validateConfig,
 } from "./config";
@@ -430,7 +431,7 @@ test("fresh defaults retain the original combined corporate scenarios and worklo
   const preset = config.scenarioPresets.find(
     (item) => item.id === config.defaultScenarioId,
   )!;
-  assert.equal(config.tasks.length, 12);
+  assert.equal(config.tasks.length, 18);
   assert.deepEqual(preset.input.taskIds, [
     "contracts",
     "estimates",
@@ -442,9 +443,10 @@ test("fresh defaults retain the original combined corporate scenarios and worklo
   assert.equal(preset.input.rentalMode, "dedicated-node");
   assert.equal(preset.input.reserveRentalMode, "always-on");
   assert.equal(config.assumptions.defaultHoursMonth, 720);
-  assert.equal(config.catalogUpdateVersion, 1);
+  assert.equal(config.catalogUpdateVersion, 2);
   assert.equal(preset.input.years, 3);
   assert.equal(preset.input.priority, "balance");
+  assert.equal(preset.input.months, 36);
 });
 
 test("untouched generated group defaults are retired without deleting records or user edits", () => {
@@ -505,7 +507,7 @@ test("live catalogs apply the 720-hour dedicated policy once while preserving cu
     const migrated = parseConfig(old);
     assert.ok(migrated.config, migrated.errors.join(" "));
     const config = migrated.config;
-    assert.equal(config.catalogUpdateVersion, 1);
+    assert.equal(config.catalogUpdateVersion, 2);
     assert.equal(config.catalogVersion, "customer-prices-17");
     assert.equal(config.assumptions.defaultHoursMonth, 720);
     assert.equal(config.assumptions.electricityRubKwh, 18);
@@ -594,4 +596,101 @@ test("immutable catalog snapshots bypass new always-on defaults and additive GPU
     parseConfig(marked, { preserveCalculationDefaults: true }).config,
     "historical snapshots keep their earlier monthly norm",
   );
+});
+
+test("monthly horizon update changes existing annual defaults once and keeps other user policies", () => {
+  for (const existingMonths of [undefined, 12]) {
+    const old = cloneDefaultConfig();
+    old.catalogUpdateVersion = 1;
+    old.tasks = old.tasks.slice(0, 12);
+    old.scenarioPresets[0].input.years = 1;
+    old.scenarioPresets[0].input.months = existingMonths;
+    if (existingMonths === undefined)
+      delete old.scenarioPresets[0].input.months;
+    old.scenarioPresets[0].input.hoursMonth = 240;
+    old.scenarioPresets[0].input.rentalMode = "gpu-hour";
+    old.scenarioPresets[0].input.concurrency = 19;
+    old.gpus[0].nodePriceRub = 8765432;
+    const before = structuredClone(old);
+    const migrated = parseConfig(old);
+    assert.ok(migrated.config, migrated.errors.join(" "));
+    assert.equal(migrated.config.catalogUpdateVersion, 2);
+    assert.equal(migrated.config.scenarioPresets[0].input.months, 36);
+    assert.equal(
+      migrated.config.scenarioPresets[0].input.years,
+      1,
+      "legacy data is preserved while explicit months controls calculation",
+    );
+    assert.equal(migrated.config.scenarioPresets[0].input.hoursMonth, 240);
+    assert.equal(
+      migrated.config.scenarioPresets[0].input.rentalMode,
+      "gpu-hour",
+    );
+    assert.equal(migrated.config.scenarioPresets[0].input.concurrency, 19);
+    assert.deepEqual(migrated.config.gpus, old.gpus);
+    assert.deepEqual(old, before);
+    assert.deepEqual(parseConfig(migrated.config).config, migrated.config);
+    assert.deepEqual(parseConfig(migrated.config).warnings, []);
+    migrated.config.scenarioPresets[0].input.months = 18;
+    assert.equal(
+      parseConfig(migrated.config).config?.scenarioPresets[0].input.months,
+      18,
+    );
+  }
+});
+
+test("six additive task rules keep all original and customer scenarios, including disabled overrides", () => {
+  const old = cloneDefaultConfig();
+  old.catalogUpdateVersion = 1;
+  old.tasks = old.tasks.slice(0, 12);
+  const originals = structuredClone(old.tasks);
+  const custom = {
+    ...createAdditionalBusinessTasks()[0],
+    enabled: false,
+    minQualityTier: 4 as const,
+    description: "Наше правило поддержки",
+  };
+  old.tasks.push(custom, {
+    ...custom,
+    id: "customer-special",
+    title: "Особый процесс",
+  });
+  const migrated = parseConfig(old).config!;
+  assert.equal(migrated.tasks.length, 19);
+  assert.deepEqual(migrated.tasks.slice(0, 12), originals);
+  assert.deepEqual(
+    migrated.tasks.find((task) => task.id === custom.id),
+    custom,
+  );
+  assert.ok(migrated.tasks.some((task) => task.id === "customer-special"));
+  assert.equal(
+    new Set(migrated.tasks.map((task) => task.id)).size,
+    migrated.tasks.length,
+  );
+  assert.deepEqual(migrated.scenarioPresets[0].input.taskIds, [
+    "contracts",
+    "estimates",
+    "incidents",
+    "agents",
+  ]);
+  assert.deepEqual(parseConfig(migrated).config?.tasks, migrated.tasks);
+});
+
+test("old immutable snapshots retain twelve tasks and their annual period, while live months are bounded", () => {
+  const old = cloneDefaultConfig();
+  old.catalogUpdateVersion = 1;
+  old.tasks = old.tasks.slice(0, 12);
+  old.scenarioPresets[0].input.years = 1;
+  delete old.scenarioPresets[0].input.months;
+  const parsed = parseConfig(old, { preserveCalculationDefaults: true });
+  assert.deepEqual(parsed.config, old);
+  assert.deepEqual(parsed.warnings, []);
+  const current = cloneDefaultConfig();
+  for (const months of [0, 121, 1.5, "36"]) {
+    const invalid: Record<string, any> = structuredClone(current);
+    invalid.scenarioPresets[0].input.months = months;
+    assert.equal(parseConfig(invalid).config, null);
+  }
+  current.scenarioPresets[0].input.months = 120;
+  assert.ok(parseConfig(current).config);
 });
