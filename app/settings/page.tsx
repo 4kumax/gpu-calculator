@@ -1,90 +1,780 @@
 "use client";
 
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, Cpu, Database, Download, FileJson, Plus, RotateCcw, Save, Settings2, SlidersHorizontal, Upload } from "lucide-react";
-import { readConfig, useConfig } from "@/hooks/use-config";
-import { AppConfig, Capability, GpuConfig, ModelConfig, QualityTier, TaskRule, cloneDefaultConfig, validateConfig } from "@/lib/config";
+import { Download, FileJson, Save, Settings2 } from "lucide-react";
+import { useConfig } from "@/hooks/use-config";
+import { AppConfig, cloneDefaultConfig, parseConfig } from "@/lib/config";
+import {
+  clearDraft,
+  configDifferences,
+  mergeDraftChanges,
+  readDraft,
+  saveDraft,
+} from "@/lib/local-config-store";
+import {
+  AssumptionsEditor,
+  GpusEditor,
+  ModelsEditor,
+  TasksEditor,
+} from "@/components/settings/catalog-editors";
+import {
+  ProfilesEditor,
+  QualityEditor,
+} from "@/components/settings/evidence-editors";
+import { DiffPreview } from "@/components/settings/diff-preview";
 
-type Section = "models"|"gpus"|"assumptions"|"tasks"|"exchange";
-const CAPABILITIES: Capability[]=["текст","код","изображения","инструменты","длинный контекст","агенты"];
-const sectionMeta:Record<Section,{title:string;desc:string}>={
-  models:{title:"Каталог моделей",desc:"Характеристики, возможности и минимальные конфигурации запуска"},
-  gpus:{title:"Каталог GPU и цены",desc:"Память, узлы, энергопотребление, покупка и аренда"},
-  assumptions:{title:"Допущения TCO",desc:"Глобальные финансовые и инфраструктурные коэффициенты"},
-  tasks:{title:"Правила задач",desc:"Требования, на основании которых калькулятор допускает модели"},
-  exchange:{title:"Импорт, экспорт и восстановление",desc:"Перенос согласованных параметров и возврат к исходным значениям"}
+type Section =
+  | "models"
+  | "profiles"
+  | "quality"
+  | "gpus"
+  | "assumptions"
+  | "tasks"
+  | "exchange";
+const SECTIONS: Record<Section, { title: string; description: string }> = {
+  models: {
+    title: "Модели",
+    description: "Характеристики и возможности моделей",
+  },
+  profiles: {
+    title: "Профили запуска",
+    description: "Связки модели и GPU, память, движок и производительность",
+  },
+  quality: {
+    title: "Испытания качества",
+    description: "Подтверждение пригодности для корпоративных задач",
+  },
+  gpus: {
+    title: "GPU и цены",
+    description: "Оборудование, отдельные источники покупки и аренды",
+  },
+  assumptions: {
+    title: "Допущения TCO",
+    description: "Финансовые и эксплуатационные параметры",
+  },
+  tasks: {
+    title: "Правила задач",
+    description: "Требования к качеству, контексту и возможностям",
+  },
+  exchange: {
+    title: "Версии и обмен",
+    description: "Предпросмотр импорта, обновления каталога и история ревизий",
+  },
 };
-const num=(value:string)=>Number.isFinite(+value)?+value:0;
+type PendingChange = { config: AppConfig; title: string; warnings: string[] };
+function downloadRaw(raw: string, name: string): string | null {
+  let url: string | null = null;
+  let anchor: HTMLAnchorElement | null = null;
+  try {
+    url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
+    anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name;
+    document.body.appendChild(anchor);
+    anchor.click();
+    return null;
+  } catch {
+    return "Не удалось скачать JSON. Проверьте разрешение браузера на загрузку файлов и повторите экспорт.";
+  } finally {
+    anchor?.remove();
+    if (url) {
+      const createdUrl = url;
+      setTimeout(() => URL.revokeObjectURL(createdUrl), 1000);
+    }
+  }
+}
 
-export default function SettingsPage(){
-  const {config:live,save,reset,loaded}=useConfig();
-  const [draft,setDraft]=useState<AppConfig>(cloneDefaultConfig);
-  const [section,setSection]=useState<Section>("models");
-  const [errors,setErrors]=useState<string[]>([]);
-  const [message,setMessage]=useState("");
-  const fileRef=useRef<HTMLInputElement>(null);
-  useEffect(()=>{if(loaded)setDraft(live)},[loaded,live]);
-  const dirty=useMemo(()=>JSON.stringify(draft)!==JSON.stringify(live),[draft,live]);
-  useEffect(()=>{const guard=(e:BeforeUnloadEvent)=>{if(dirty){e.preventDefault();e.returnValue=""}};window.addEventListener("beforeunload",guard);return()=>window.removeEventListener("beforeunload",guard)},[dirty]);
+export default function SettingsPage() {
+  const store = useConfig();
+  const live = store.config;
+  const [draft, setDraft] = useState<AppConfig>(cloneDefaultConfig);
+  const [base, setBase] = useState<AppConfig>(cloneDefaultConfig);
+  const [baseRevision, setBaseRevision] = useState(live.revision);
+  const [draftMode, setDraftMode] = useState<"local" | "shared">("local");
+  const [initialized, setInitialized] = useState(false);
+  const [section, setSection] = useState<Section>("models");
+  const [errors, setErrors] = useState<string[]>([]);
+  const [message, setMessage] = useState("");
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [draftRecovery, setDraftRecovery] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingChange | null>(null);
+  const [changeMessage, setChangeMessage] = useState("");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const currentRevision =
+    store.mode === "shared" ? store.sharedRevision : live.revision;
+  const dirty = useMemo(
+    () => configDifferences(base, draft).length > 0,
+    [base, draft],
+  );
+  const conflict =
+    initialized &&
+    (baseRevision !== currentRevision ||
+      draftMode !== store.mode ||
+      JSON.stringify(base) !== JSON.stringify(live));
+  const readOnly =
+    store.configured && (!store.authenticated || store.role !== "editor");
+  const initialPublication =
+    store.configured &&
+    store.authenticated &&
+    store.role === "editor" &&
+    store.sharedRevision === 0;
 
-  const updateModel=(id:string,patch:Partial<ModelConfig>)=>setDraft(c=>({...c,models:c.models.map(x=>x.id===id?{...x,...patch}:x)}));
-  const updateGpu=(id:string,patch:Partial<GpuConfig>)=>setDraft(c=>({...c,gpus:c.gpus.map(x=>x.id===id?{...x,...patch}:x)}));
-  const updateTask=(id:string,patch:Partial<TaskRule>)=>setDraft(c=>({...c,tasks:c.tasks.map(x=>x.id===id?{...x,...patch}:x)}));
-  const addModel=()=>{const n=Date.now();setDraft(c=>({...c,models:[...c.models,{id:`model-${n}`,enabled:true,name:"Новая модель",developer:"",architecture:"MoE",totalParamsB:100,activeParamsB:20,nativeContextK:128,maxContextK:128,bitsPerWeight:4,qualityTier:2,capabilities:["текст"],recommendedGpuId:c.gpus.find(g=>g.enabled)?.id??c.gpus[0]?.id??"",minGpuCount:1,sessionsPerReplica:1,precision:"INT4",license:"Требует проверки",note:"",sourceUrl:"",sourceDate:new Date().toISOString().slice(0,10),evidence:"Инженерная оценка"}]}))};
-  const duplicateModel=(source:ModelConfig)=>{const n=Date.now();setDraft(c=>({...c,models:[...c.models,{...source,id:`${source.id}-copy-${n}`,name:`${source.name} — копия`,evidence:"Инженерная оценка"}]}))};
-  const addGpu=()=>{const n=Date.now();setDraft(c=>({...c,gpus:[...c.gpus,{id:`gpu-${n}`,enabled:true,name:"Новый GPU",vendor:"",memoryGb:80,nodeGpuCount:8,nodePriceRub:0,rentPerGpuHourRub:0,nodePowerKw:8,memoryBandwidthTb:0,interconnect:"",priceKind:"Инженерная оценка",sourceLabel:"",sourceUrl:"",sourceDate:new Date().toISOString().slice(0,10)}]}))};
-  const addTask=()=>{const n=Date.now();setDraft(c=>({...c,tasks:[...c.tasks,{id:`task-${n}`,enabled:true,title:"Новая задача",description:"",category:"",minQualityTier:2,minContextK:128,requiredCapabilities:["текст"]}]}))};
-  const handleSave=()=>{const found=validateConfig(draft);if(found.length){setErrors(found);setMessage("");return}const result=save(draft);if(result.length){setErrors(result);return}setDraft(readConfig());setErrors([]);setMessage("Настройки сохранены. Калькулятор уже использует новую ревизию.")};
-  const discard=()=>{setDraft(live);setErrors([]);setMessage("Изменения отменены.")};
-  const exportConfig=()=>{const blob=new Blob([JSON.stringify(draft,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`gpu-calculator-settings-r${draft.revision}.json`;a.click();URL.revokeObjectURL(url);setMessage("Файл параметров экспортирован.")};
-  const importConfig=async(e:ChangeEvent<HTMLInputElement>)=>{const file=e.target.files?.[0];if(!file)return;if(file.size>2*1024*1024){setErrors(["Файл превышает допустимый размер 2 МБ."]);return}try{const parsed=JSON.parse(await file.text()) as AppConfig;const found=validateConfig(parsed);if(found.length){setErrors(found);return}setDraft(parsed);setErrors([]);setMessage("Файл проверен и загружен в черновик. Нажмите «Сохранить изменения».")}catch{setErrors(["Не удалось прочитать JSON-файл."])}finally{e.target.value=""}};
-  const resetAll=()=>{if(!window.confirm("Вернуть все модели, GPU, цены и коэффициенты к исходным значениям?"))return;reset();const fresh=cloneDefaultConfig();setDraft(fresh);setErrors([]);setMessage("Исходные параметры восстановлены.")};
+  useEffect(() => {
+    if (!store.loaded || initialized) return;
+    let restored: ReturnType<typeof readDraft> = { draft: null, error: null };
+    try {
+      restored = readDraft(window.sessionStorage);
+    } catch {
+      restored.error =
+        "Сохранение черновиков в этой вкладке недоступно. Экспортируйте изменения перед выходом.";
+    }
+    if (restored.draft) {
+      setDraft(restored.draft.config);
+      setBase(restored.draft.baseConfig);
+      setBaseRevision(
+        restored.draft.baseRevision ?? restored.draft.baseConfig.revision,
+      );
+      setDraftMode(restored.draft.mode);
+      setMessage(
+        "Восстановлен сохранённый черновик. Калькулятор использует опубликованную ревизию до сохранения изменений.",
+      );
+    } else {
+      setDraft(live);
+      setBase(live);
+      setBaseRevision(currentRevision);
+      setDraftMode(store.mode);
+    }
+    setDraftError(restored.error);
+    setDraftRecovery(restored.recoveryRaw ?? null);
+    setInitialized(true);
+  }, [store.loaded, initialized, live, currentRevision, store.mode]);
 
-  return <main className="page-shell">
-    <div className="page-heading"><div><div className="eyebrow"><Settings2 size={15}/>Управление расчётной моделью</div><h1>Параметры калькулятора</h1></div><p>Изменяйте каталоги моделей и оборудования, цены, правила подбора и все составляющие совокупной стоимости владения.</p></div>
-    <div className="settings-layout">
-      <aside className="panel settings-nav">
-        <button className={section==="models"?"active":""} onClick={()=>setSection("models")}><Database size={16}/>Модели <span>({draft.models.length})</span></button>
-        <button className={section==="gpus"?"active":""} onClick={()=>setSection("gpus")}><Cpu size={16}/>GPU и цены <span>({draft.gpus.length})</span></button>
-        <button className={section==="assumptions"?"active":""} onClick={()=>setSection("assumptions")}><SlidersHorizontal size={16}/>Допущения TCO</button>
-        <button className={section==="tasks"?"active":""} onClick={()=>setSection("tasks")}><Settings2 size={16}/>Правила задач <span>({draft.tasks.length})</span></button>
-        <button className={section==="exchange"?"active":""} onClick={()=>setSection("exchange")}><FileJson size={16}/>Импорт и экспорт</button>
-        <div className="local-warning">Изменения сохраняются локально в этом браузере и не меняют параметры у других пользователей.</div>
-      </aside>
-      <section className="settings-main">
-        <div className="settings-toolbar"><div><h2>{sectionMeta[section].title}</h2><p>{sectionMeta[section].desc}</p></div><div className="action-row"><button className="button" disabled={!dirty} onClick={discard}>Отменить</button><button className="button primary" disabled={!dirty} onClick={handleSave}><Save size={14}/>Сохранить изменения</button></div></div>
-        {errors.length>0&&<div className="error-box"><b>Сохранение невозможно:</b><ul>{errors.map(x=><li key={x}>{x}</li>)}</ul></div>}
-        {message&&<div className="success-box">{message}</div>}
+  useEffect(() => {
+    if (!initialized || busy || dirty || !conflict) return;
+    setDraft(live);
+    setBase(live);
+    setBaseRevision(currentRevision);
+    setDraftMode(store.mode);
+  }, [initialized, busy, dirty, conflict, live, currentRevision, store.mode]);
 
-        {section==="models"&&<div className="panel"><div className="panel-body" style={{paddingBottom:8}}><div className="card-title-row"><div><b>{draft.models.filter(x=>x.enabled).length} активных моделей</b><div className="task-desc">Класс качества отделён от контекста и функциональных возможностей; ёмкость сессий требует нагрузочного теста</div></div><button className="button" onClick={addModel}><Plus size={14}/>Добавить модель</button></div></div><div className="config-table-wrap"><table className="config-table"><thead><tr><th>Активна</th><th>Модель и разработчик</th><th>Архитектура</th><th>Параметры, млрд</th><th>Контекст, тыс.<br/>нативный / макс.</th><th>Класс качества</th><th>Возможности</th><th>GPU / минимум / сессии</th><th>Точность / память</th><th>Источник и статус</th><th/></tr></thead><tbody>{draft.models.map(model=><tr key={model.id}>
-          <td><button className={`toggle ${model.enabled?"on":""}`} onClick={()=>updateModel(model.id,{enabled:!model.enabled})}><i/></button></td>
-          <td><input className="table-input wide" value={model.name} onChange={e=>updateModel(model.id,{name:e.target.value})}/><input className="table-input" style={{marginTop:5}} value={model.developer} placeholder="Разработчик" onChange={e=>updateModel(model.id,{developer:e.target.value})}/><div className="task-desc">ID: {model.id}</div></td>
-          <td><select className="table-input" value={model.architecture} onChange={e=>updateModel(model.id,{architecture:e.target.value as "Dense"|"MoE"})}><option>Dense</option><option>MoE</option></select></td>
-          <td><input className="table-input" type="number" value={model.totalParamsB} onChange={e=>updateModel(model.id,{totalParamsB:num(e.target.value)})}/><input className="table-input" style={{marginTop:5}} type="number" title="Активные параметры" value={model.activeParamsB} onChange={e=>updateModel(model.id,{activeParamsB:num(e.target.value)})}/></td>
-          <td><input className="table-input" type="number" title="Нативный контекст" value={model.nativeContextK} onChange={e=>updateModel(model.id,{nativeContextK:num(e.target.value)})}/><input className="table-input" style={{marginTop:5}} type="number" title="Максимальный контекст с расширением" value={model.maxContextK} onChange={e=>updateModel(model.id,{maxContextK:num(e.target.value)})}/></td>
-          <td><input className="table-input" type="number" min="1" max="5" value={model.qualityTier} onChange={e=>updateModel(model.id,{qualityTier:num(e.target.value) as QualityTier})}/></td>
-          <td><input className="table-input wide" value={model.capabilities.join(", ")} onChange={e=>updateModel(model.id,{capabilities:e.target.value.split(",").map(x=>x.trim()).filter(x=>CAPABILITIES.includes(x as Capability)) as Capability[]})}/></td>
-          <td><select className="table-input" value={model.recommendedGpuId} onChange={e=>updateModel(model.id,{recommendedGpuId:e.target.value})}>{draft.gpus.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}</select><input className="table-input" style={{marginTop:5}} type="number" title="Минимум GPU на экземпляр" value={model.minGpuCount} onChange={e=>updateModel(model.id,{minGpuCount:num(e.target.value)})}/><input className="table-input" style={{marginTop:5}} type="number" title="Параллельных сессий на экземпляр" value={model.sessionsPerReplica} onChange={e=>updateModel(model.id,{sessionsPerReplica:num(e.target.value)})}/></td>
-          <td><input className="table-input" value={model.precision} onChange={e=>updateModel(model.id,{precision:e.target.value})}/><input className="table-input" style={{marginTop:5}} type="number" title="Бит на вес" value={model.bitsPerWeight} onChange={e=>updateModel(model.id,{bitsPerWeight:num(e.target.value)})}/><input className="table-input" style={{marginTop:5}} type="number" title="Размер чекпоинта, ГБ; пусто — расчёт из параметров" value={model.checkpointWeightGb??""} placeholder="Чекпоинт, ГБ" onChange={e=>updateModel(model.id,{checkpointWeightGb:e.target.value===""?undefined:num(e.target.value)})}/></td>
-          <td><select className="table-input wide" value={model.evidence} onChange={e=>updateModel(model.id,{evidence:e.target.value as ModelConfig["evidence"]})}><option>Публичные характеристики</option><option>Конфигурация проверена поставщиком</option><option>Инженерная оценка</option></select><input className="table-input wide" style={{marginTop:5}} value={model.sourceUrl} placeholder="URL источника" onChange={e=>updateModel(model.id,{sourceUrl:e.target.value})}/></td>
-          <td><div className="table-actions"><button className="icon-button" title="Дублировать" onClick={()=>duplicateModel(model)}><Plus size={14}/></button><button className="icon-button" title="Архивировать" onClick={()=>updateModel(model.id,{enabled:false})}><Archive size={14}/></button></div></td>
-        </tr>)}</tbody></table></div></div>}
+  useEffect(() => {
+    if (!initialized || draftRecovery) return;
+    try {
+      const error = dirty
+        ? saveDraft(window.sessionStorage, {
+            config: draft,
+            baseConfig: base,
+            baseRevision,
+            mode: draftMode,
+            updatedAt: new Date().toISOString(),
+          })
+        : clearDraft(window.sessionStorage);
+      setDraftError(error);
+    } catch {
+      setDraftError(
+        "Не удалось сохранить черновик в браузере. Экспортируйте JSON перед переходом на другую страницу.",
+      );
+    }
+  }, [initialized, dirty, draft, base, baseRevision, draftMode, draftRecovery]);
 
-        {section==="gpus"&&<div className="panel"><div className="panel-body" style={{paddingBottom:8}}><div className="card-title-row"><div><b>{draft.gpus.filter(x=>x.enabled).length} активных ускорителей</b><div className="task-desc">Публичные значения и оценки явно разделены</div></div><button className="button" onClick={addGpu}><Plus size={14}/>Добавить GPU</button></div></div><div className="config-table-wrap"><table className="config-table"><thead><tr><th>Активен</th><th>GPU</th><th>Память, ГБ</th><th>GPU в узле</th><th>Покупка узла, ₽</th><th>Аренда GPU-час, ₽</th><th>Мощность узла, кВт</th><th>Межсоединение</th><th>Статус цены</th><th>Источник</th><th/></tr></thead><tbody>{draft.gpus.map(gpu=><tr key={gpu.id}>
-          <td><button className={`toggle ${gpu.enabled?"on":""}`} onClick={()=>updateGpu(gpu.id,{enabled:!gpu.enabled})}><i/></button></td><td><input className="table-input wide" value={gpu.name} onChange={e=>updateGpu(gpu.id,{name:e.target.value})}/><input className="table-input" style={{marginTop:5}} value={gpu.vendor} onChange={e=>updateGpu(gpu.id,{vendor:e.target.value})}/><div className="task-desc">ID: {gpu.id}</div></td>
-          <td><input className="table-input" type="number" value={gpu.memoryGb} onChange={e=>updateGpu(gpu.id,{memoryGb:num(e.target.value)})}/></td><td><input className="table-input" type="number" value={gpu.nodeGpuCount} onChange={e=>updateGpu(gpu.id,{nodeGpuCount:num(e.target.value)})}/></td><td><input className="table-input" type="number" value={gpu.nodePriceRub} onChange={e=>updateGpu(gpu.id,{nodePriceRub:num(e.target.value)})}/></td><td><input className="table-input" type="number" step="0.01" value={gpu.rentPerGpuHourRub} onChange={e=>updateGpu(gpu.id,{rentPerGpuHourRub:num(e.target.value)})}/></td><td><input className="table-input" type="number" step="0.1" value={gpu.nodePowerKw} onChange={e=>updateGpu(gpu.id,{nodePowerKw:num(e.target.value)})}/></td><td><input className="table-input wide" value={gpu.interconnect} onChange={e=>updateGpu(gpu.id,{interconnect:e.target.value})}/></td>
-          <td><select className="table-input wide" value={gpu.priceKind} onChange={e=>updateGpu(gpu.id,{priceKind:e.target.value as GpuConfig["priceKind"]})}><option>Публичная цена</option><option>Коммерческая оценка</option><option>Инженерная оценка</option></select></td><td><input className="table-input wide" value={gpu.sourceLabel} placeholder="Источник" onChange={e=>updateGpu(gpu.id,{sourceLabel:e.target.value})}/><input className="table-input wide" style={{marginTop:5}} value={gpu.sourceUrl} placeholder="URL" onChange={e=>updateGpu(gpu.id,{sourceUrl:e.target.value})}/></td><td><button className="icon-button" title="Архивировать" onClick={()=>updateGpu(gpu.id,{enabled:false})}><Archive size={14}/></button></td>
-        </tr>)}</tbody></table></div></div>}
+  useEffect(() => {
+    const guard = (event: BeforeUnloadEvent) => {
+      if (dirty) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [dirty, draftError]);
 
-        {section==="assumptions"&&<div className="panel settings-card"><h3>Финансовые и эксплуатационные параметры</h3><div className="settings-form-grid">{([
-          ["defaultHoursMonth","Использование по умолчанию, ч/мес."],["defaultYears","Горизонт по умолчанию, лет"],["defaultConcurrency","Параллельность по умолчанию"],["electricityRubKwh","Электроэнергия, ₽/кВт·ч"],["pue","PUE центра обработки данных"],["supportPctCapexYear","Поддержка, % CAPEX/год"],["fitoutPctCapex","Ввод в эксплуатацию, % CAPEX"],["idlePowerPct","Мощность в ожидании, %"],["memoryOverheadPct","Запас памяти, %"],["usableMemoryPct","Используемая память GPU, %"],["rackMonthPerNodeRub","Размещение узла, ₽/мес."],["networkStorageMonthRub","Сеть и хранилище, ₽/мес."],["operationsMonthRub","Команда эксплуатации, ₽/мес."],["rentalServicePct","Надбавка к аренде, %"],["contingencyPct","Непредвиденные затраты, %"],["residualValuePct","Остаточная стоимость, %"],["stalePriceDays","Срок актуальности цены, дней"]
-        ] as Array<[keyof AppConfig["assumptions"],string]>).map(([key,label])=><label className="field" key={key}><span>{label}</span><input className="control" type="number" step="0.1" value={draft.assumptions[key]} onChange={e=>setDraft(c=>({...c,assumptions:{...c.assumptions,[key]:num(e.target.value)}}))}/></label>)}</div></div>}
+  const exportRaw = (raw: string, name: string) => {
+    const error = downloadRaw(raw, name);
+    if (error) setErrors([error]);
+  };
+  const startFreshDraft = () => {
+    try {
+      const error = clearDraft(window.sessionStorage);
+      if (error) {
+        setErrors([error]);
+        return;
+      }
+      setDraftRecovery(null);
+      setDraftError(null);
+    } catch {
+      setErrors(["Не удалось очистить повреждённый черновик."]);
+    }
+  };
+  const loadLive = () => {
+    setDraft(live);
+    setBase(live);
+    setBaseRevision(currentRevision);
+    setDraftMode(store.mode);
+    setErrors([]);
+    setMessage("Загружена текущая ревизия каталога.");
+  };
+  const keepDraft = () => {
+    setDraft(mergeDraftChanges(base, draft, live));
+    setBase(live);
+    setBaseRevision(currentRevision);
+    setDraftMode(store.mode);
+    setErrors([]);
+    setMessage(
+      "Мои изменения перенесены на актуальную ревизию. При изменении одного поля в обеих версиях оставлено значение черновика. Проверьте результат и сохраните.",
+    );
+  };
+  const handleSave = async () => {
+    if (conflict || readOnly) return;
+    const checked = parseConfig(draft);
+    if (!checked.config) {
+      setErrors(checked.errors);
+      setMessage("");
+      return;
+    }
+    setBusy(true);
+    setErrors([]);
+    setMessage("");
+    try {
+      const result = await store.save(checked.config, {
+        expectedRevision: baseRevision,
+        message:
+          changeMessage ||
+          (initialPublication
+            ? "Первая публикация общего каталога"
+            : "Изменение настроек"),
+        recover: Boolean(store.recoveryRaw),
+      });
+      if (!result.ok || !result.config) {
+        setErrors(result.errors);
+        return;
+      }
+      setDraft(result.config);
+      setBase(result.config);
+      setBaseRevision(result.config.revision);
+      setDraftMode(store.mode);
+      setChangeMessage("");
+      setMessage(
+        `Ревизия ${result.config.revision} сохранена ${store.mode === "shared" ? "в общем каталоге" : "в этом браузере"}. ${result.warnings.length ? result.warnings.join(" ") : "Калькулятор использует новые параметры."}`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  const importConfig = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      if (file.size > 2 * 1024 * 1024)
+        throw new Error("Файл превышает допустимый размер 2 МБ.");
+      const value: unknown = JSON.parse(await file.text());
+      const parsed = parseConfig(value);
+      if (!parsed.config) {
+        setErrors(parsed.errors);
+        return;
+      }
+      setPending({
+        config: parsed.config,
+        title: `Импорт «${file.name}»`,
+        warnings: parsed.warnings,
+      });
+      setErrors([]);
+      setMessage("");
+    } catch (error) {
+      setErrors([
+        error instanceof SyntaxError
+          ? "Не удалось прочитать JSON-файл."
+          : error instanceof Error
+            ? error.message
+            : "Не удалось импортировать файл.",
+      ]);
+    } finally {
+      event.target.value = "";
+    }
+  };
+  const previewHistory = async (revision: number) => {
+    try {
+      const config = await store.loadHistory(revision);
+      setPending({
+        config,
+        title: `Восстановление ревизии ${revision}`,
+        warnings: [],
+      });
+      setErrors([]);
+    } catch (error) {
+      setErrors([
+        error instanceof Error ? error.message : "Не удалось открыть историю.",
+      ]);
+    }
+  };
+  const sessionAction = async (action: "login" | "logout") => {
+    setBusy(true);
+    try {
+      const found =
+        action === "login" ? await store.login(token) : await store.logout();
+      setErrors(found);
+    } finally {
+      setToken("");
+      setBusy(false);
+    }
+  };
 
-        {section==="tasks"&&<div className="panel"><div className="panel-body" style={{paddingBottom:8}}><div className="card-title-row"><div><b>Правила «задача → модель»</b><div className="task-desc">Качество, контекст и возможности задаются независимо</div></div><button className="button" onClick={addTask}><Plus size={14}/>Добавить задачу</button></div></div><div className="config-table-wrap"><table className="config-table"><thead><tr><th>Активна</th><th>Название</th><th>Описание</th><th>Категория</th><th>Класс качества</th><th>Контекст, тыс.</th><th>Обязательные возможности</th><th/></tr></thead><tbody>{draft.tasks.map(task=><tr key={task.id}><td><button className={`toggle ${task.enabled?"on":""}`} onClick={()=>updateTask(task.id,{enabled:!task.enabled})}><i/></button></td><td><input className="table-input wide" value={task.title} onChange={e=>updateTask(task.id,{title:e.target.value})}/><div className="task-desc">ID: {task.id}</div></td><td><input className="table-input wide" value={task.description} onChange={e=>updateTask(task.id,{description:e.target.value})}/></td><td><input className="table-input" value={task.category} onChange={e=>updateTask(task.id,{category:e.target.value})}/></td><td><input className="table-input" type="number" min="1" max="5" value={task.minQualityTier} onChange={e=>updateTask(task.id,{minQualityTier:num(e.target.value) as QualityTier})}/></td><td><input className="table-input" type="number" value={task.minContextK} onChange={e=>updateTask(task.id,{minContextK:num(e.target.value)})}/></td><td><input className="table-input wide" value={task.requiredCapabilities.join(", ")} onChange={e=>updateTask(task.id,{requiredCapabilities:e.target.value.split(",").map(x=>x.trim()).filter(x=>CAPABILITIES.includes(x as Capability)) as Capability[]})}/></td><td><button className="icon-button" title="Архивировать" onClick={()=>updateTask(task.id,{enabled:false})}><Archive size={14}/></button></td></tr>)}</tbody></table></div></div>}
-
-        {section==="exchange"&&<div className="stack"><div className="panel settings-card"><h3>Перенос параметров</h3><div className="import-zone"><FileJson size={34} color="#0d6f9c"/><b>Один JSON-файл содержит всю расчётную модель</b><p>Экспортируйте согласованную конфигурацию или загрузите файл. Импорт сначала проходит проверку и попадает в черновик.</p><div className="action-row"><button className="button" onClick={exportConfig}><Download size={14}/>Экспортировать JSON</button><button className="button" onClick={()=>fileRef.current?.click()}><Upload size={14}/>Импортировать JSON</button><input ref={fileRef} hidden type="file" accept="application/json,.json" onChange={importConfig}/></div></div></div><div className="panel settings-card"><div className="card-title-row"><div><h3 style={{marginBottom:4}}>Восстановление исходных значений</h3><div className="task-desc">Сброс удалит локальные изменения каталога и цен в этом браузере.</div></div><button className="button danger" onClick={resetAll}><RotateCcw size={14}/>Полный сброс</button></div></div><div className="panel settings-card"><h3>Состояние конфигурации</h3><div className="metric-grid"><div className="metric"><span>Версия схемы</span><b>{draft.schemaVersion}</b><small>совместимая</small></div><div className="metric"><span>Ревизия</span><b>{draft.revision}</b><small>{dirty?"есть несохранённые изменения":"сохранено"}</small></div><div className="metric"><span>Моделей</span><b>{draft.models.length}</b><small>{draft.models.filter(x=>x.enabled).length} активных</small></div><div className="metric"><span>GPU</span><b>{draft.gpus.length}</b><small>{draft.gpus.filter(x=>x.enabled).length} активных</small></div></div></div></div>}
-      </section>
-    </div>
-    <footer className="footer-note"><span>Настройки хранятся в localStorage. Для общей корпоративной конфигурации потребуется серверное хранилище и управление ролями.</span><span>Ревизия {live.revision}</span></footer>
-  </main>;
+  return (
+    <main className="page-shell">
+      <div className="page-heading">
+        <div>
+          <div className="eyebrow">
+            <Settings2 size={15} />
+            Управление расчётной моделью
+          </div>
+          <h1>Параметры калькулятора</h1>
+        </div>
+        <p>
+          Каталоги, подтверждённые профили запуска, цены и допущения. Изменения
+          сначала сохраняются в черновик.
+        </p>
+      </div>
+      {store.configured && (
+        <section className="panel settings-card">
+          <h2>Общий каталог</h2>
+          {store.authenticated ? (
+            <div className="card-title-row">
+              <p>
+                Роль: {store.role === "editor" ? "редактор" : "просмотр"}. Общая
+                ревизия: {store.sharedRevision || "ещё не опубликована"}.
+              </p>
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() => void sessionAction("logout")}
+              >
+                Выйти
+              </button>
+            </div>
+          ) : (
+            <form
+              className="session-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void sessionAction("login");
+              }}
+            >
+              <label className="field">
+                <span>Ключ доступа к общему каталогу</span>
+                <input
+                  className="control"
+                  type="password"
+                  autoComplete="off"
+                  value={token}
+                  onChange={(event) => setToken(event.target.value)}
+                />
+              </label>
+              <button
+                className="button primary"
+                type="submit"
+                disabled={busy || !token}
+              >
+                Войти
+              </button>
+              <p>
+                Ключ используется для входа и не сохраняется в локальном
+                хранилище.
+              </p>
+            </form>
+          )}
+        </section>
+      )}
+      {store.error && (
+        <div className="error-box" role="alert">
+          <p>{store.error}</p>
+          <button className="button" onClick={() => void store.refresh()}>
+            Повторить загрузку
+          </button>
+        </div>
+      )}
+      {store.warnings.length > 0 && (
+        <details className="panel settings-card">
+          <summary>Замечания к каталогу ({store.warnings.length})</summary>
+          <ul>
+            {store.warnings.map((warning, index) => (
+              <li key={`${index}-${warning}`}>{warning}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {store.recoveryRaw && (
+        <div className="status-banner" role="alert">
+          <p>
+            Повреждённые настройки сохранены для восстановления. Перед заменой
+            каталога скачайте исходный файл. Успешное сохранение создаст
+            резервную копию в браузере.
+          </p>
+          <button
+            className="button"
+            onClick={() =>
+              exportRaw(store.recoveryRaw!, "gpu-catalog-recovery.json")
+            }
+          >
+            Скачать исходные настройки
+          </button>
+        </div>
+      )}
+      {draftError && (
+        <div className="error-box" role="alert">
+          <p>{draftError}</p>
+          {draftRecovery && (
+            <button
+              className="button"
+              onClick={() =>
+                exportRaw(draftRecovery, "gpu-draft-recovery.json")
+              }
+            >
+              Скачать повреждённый черновик
+            </button>
+          )}
+          {draftRecovery && (
+            <button className="button" onClick={startFreshDraft}>
+              Начать новый черновик
+            </button>
+          )}
+          <button
+            className="button"
+            onClick={() =>
+              exportRaw(JSON.stringify(draft, null, 2), "gpu-draft.json")
+            }
+          >
+            Экспортировать текущий черновик
+          </button>
+        </div>
+      )}
+      {!initialized ? (
+        <p role="status">Загрузка параметров…</p>
+      ) : (
+        <div className="settings-layout">
+          <aside className="panel settings-nav" aria-label="Разделы параметров">
+            {(Object.keys(SECTIONS) as Section[]).map((key) => (
+              <button
+                key={key}
+                className={section === key ? "active" : ""}
+                aria-current={section === key ? "page" : undefined}
+                onClick={() => setSection(key)}
+              >
+                {SECTIONS[key].title}
+              </button>
+            ))}
+            <div className="local-warning">
+              {store.mode === "shared"
+                ? "Опубликованные параметры доступны участникам с доступом. Черновик хранится в текущей вкладке. Перед её закрытием экспортируйте JSON."
+                : "Локальный режим: каталог и история хранятся в браузере. Черновик восстанавливается при переходе и перезагрузке текущей вкладки; перед её закрытием экспортируйте JSON."}
+            </div>
+          </aside>
+          <section className="settings-main">
+            <div className="settings-toolbar">
+              <div>
+                <h2>{SECTIONS[section].title}</h2>
+                <p>{SECTIONS[section].description}</p>
+                <small>
+                  {dirty
+                    ? draftError
+                      ? "Черновик не сохранён в этой вкладке"
+                      : "Черновик сохранён в этой вкладке до её закрытия"
+                    : "Нет несохранённых изменений"}
+                </small>
+              </div>
+              <div className="action-row">
+                <button
+                  className="button"
+                  onClick={() =>
+                    exportRaw(
+                      JSON.stringify(draft, null, 2),
+                      `gpu-calculator-draft-r${baseRevision}.json`,
+                    )
+                  }
+                >
+                  <Download size={14} />
+                  Экспорт
+                </button>
+                <button
+                  className="button"
+                  disabled={!dirty || busy}
+                  onClick={loadLive}
+                >
+                  Отменить изменения
+                </button>
+                <button
+                  className="button primary"
+                  disabled={
+                    busy ||
+                    !store.canSave ||
+                    readOnly ||
+                    conflict ||
+                    (!dirty && !initialPublication && !store.recoveryRaw)
+                  }
+                  onClick={() => void handleSave()}
+                >
+                  <Save size={14} />
+                  {busy
+                    ? "Сохранение…"
+                    : initialPublication
+                      ? "Опубликовать общий каталог"
+                      : "Сохранить изменения"}
+                </button>
+              </div>
+            </div>
+            {readOnly && (
+              <p className="status-banner">
+                {store.authenticated
+                  ? "Доступен просмотр. Для изменения общего каталога войдите с ролью редактора."
+                  : "Войдите, чтобы просматривать и изменять общий каталог. Показанные локальные данные не опубликованы."}
+              </p>
+            )}
+            {errors.length > 0 && (
+              <div className="error-box" role="alert">
+                <b>Проверьте параметры:</b>
+                <ul>
+                  {errors.map((item, index) => (
+                    <li key={`${index}-${item}`}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {message && (
+              <div className="success-box" role="status">
+                {message}
+              </div>
+            )}
+            {conflict && dirty && (
+              <section
+                className="panel settings-card status-banner"
+                role="alert"
+              >
+                <h3>Каталог изменился, черновик сохранён</h3>
+                <p>
+                  Черновик основан на ревизии {baseRevision}; текущая ревизия —{" "}
+                  {currentRevision}. Сравните изменения. При переносе
+                  совпадающие поля получат значение из вашего черновика.
+                </p>
+                <DiffPreview
+                  before={base}
+                  after={live}
+                  title="Изменения текущего каталога"
+                />
+                <DiffPreview
+                  before={base}
+                  after={draft}
+                  title="Мои изменения"
+                />
+                <div className="action-row">
+                  <button className="button" onClick={keepDraft}>
+                    Перенести мои изменения
+                  </button>
+                  <button className="button" onClick={loadLive}>
+                    Загрузить текущую версию
+                  </button>
+                </div>
+              </section>
+            )}
+            {pending && (
+              <section className="panel settings-card">
+                <h3>{pending.title}</h3>
+                {pending.warnings.length > 0 && (
+                  <ul>
+                    {pending.warnings.map((warning, index) => (
+                      <li key={`${index}-${warning}`}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+                <DiffPreview before={draft} after={pending.config} />
+                <p>
+                  Применение обновит черновик. Действующая ревизия изменится
+                  только после сохранения.
+                </p>
+                <div className="action-row">
+                  <button
+                    className="button primary"
+                    disabled={readOnly}
+                    onClick={() => {
+                      setDraft(pending.config);
+                      setChangeMessage(pending.title);
+                      setPending(null);
+                      setMessage(
+                        "Изменения применены к черновику. Проверьте и сохраните новую ревизию.",
+                      );
+                    }}
+                  >
+                    Применить к черновику
+                  </button>
+                  <button className="button" onClick={() => setPending(null)}>
+                    Закрыть предпросмотр
+                  </button>
+                </div>
+              </section>
+            )}
+            {section !== "exchange" ? (
+              <fieldset
+                disabled={readOnly || busy}
+                className="settings-editor"
+                aria-label={SECTIONS[section].title}
+              >
+                {section === "models" && (
+                  <ModelsEditor config={draft} onChange={setDraft} />
+                )}{" "}
+                {section === "profiles" && (
+                  <ProfilesEditor config={draft} onChange={setDraft} />
+                )}{" "}
+                {section === "quality" && (
+                  <QualityEditor config={draft} onChange={setDraft} />
+                )}{" "}
+                {section === "gpus" && (
+                  <GpusEditor config={draft} onChange={setDraft} />
+                )}{" "}
+                {section === "tasks" && (
+                  <TasksEditor config={draft} onChange={setDraft} />
+                )}{" "}
+                {section === "assumptions" && (
+                  <AssumptionsEditor config={draft} onChange={setDraft} />
+                )}
+              </fieldset>
+            ) : (
+              <div className="stack">
+                <div className="panel settings-card">
+                  <h3>Импорт и обновление каталога</h3>
+                  <p>
+                    Файл проверяется до применения. Для обновления встроенных
+                    данных или восстановления показывается сравнение с текущим
+                    черновиком.
+                  </p>
+                  <div className="action-row">
+                    <button
+                      className="button"
+                      disabled={readOnly}
+                      onClick={() => fileRef.current?.click()}
+                    >
+                      <FileJson size={14} />
+                      Выбрать JSON
+                    </button>
+                    <input
+                      ref={fileRef}
+                      hidden
+                      aria-label="JSON-файл каталога"
+                      type="file"
+                      accept="application/json,.json"
+                      onChange={importConfig}
+                    />
+                    <button
+                      className="button"
+                      disabled={readOnly}
+                      onClick={() =>
+                        setPending({
+                          config: cloneDefaultConfig(),
+                          title:
+                            "Обновление / восстановление встроенного каталога",
+                          warnings: [],
+                        })
+                      }
+                    >
+                      Сравнить со встроенным каталогом
+                    </button>
+                  </div>
+                </div>
+                <div className="panel settings-card">
+                  <h3>Версия конфигурации</h3>
+                  <div className="metric-grid">
+                    <div className="metric">
+                      <span>Схема</span>
+                      <b>{draft.schemaVersion}</b>
+                    </div>
+                    <div className="metric">
+                      <span>Версия каталога</span>
+                      <b>{draft.catalogVersion}</b>
+                    </div>
+                    <div className="metric">
+                      <span>Действующая ревизия</span>
+                      <b>{currentRevision}</b>
+                    </div>
+                    <div className="metric">
+                      <span>Черновик</span>
+                      <b>{dirty ? "Изменён" : "Сохранён"}</b>
+                    </div>
+                  </div>
+                </div>
+                <div className="panel settings-card">
+                  <h3>История ревизий</h3>
+                  {store.history.length === 0 ? (
+                    <p>История появится после первого сохранения.</p>
+                  ) : (
+                    <div className="config-table-wrap">
+                      <table className="config-table">
+                        <thead>
+                          <tr>
+                            <th scope="col">Ревизия</th>
+                            <th scope="col">Дата</th>
+                            <th scope="col">Изменение</th>
+                            <th scope="col">Автор</th>
+                            <th scope="col">Просмотр</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {store.history.map((item) => (
+                            <tr key={item.revision}>
+                              <td>{item.revision}</td>
+                              <td>
+                                {new Date(item.updatedAt).toLocaleString(
+                                  "ru-RU",
+                                )}
+                              </td>
+                              <td>{item.message}</td>
+                              <td>{item.actor || "Этот браузер"}</td>
+                              <td>
+                                <button
+                                  className="button"
+                                  onClick={() =>
+                                    void previewHistory(item.revision)
+                                  }
+                                >
+                                  Сравнить
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {dirty && (
+              <section className="panel settings-card">
+                <label className="field">
+                  <span>Описание изменения для истории</span>
+                  <input
+                    className="control"
+                    value={changeMessage}
+                    disabled={readOnly}
+                    maxLength={1000}
+                    onChange={(event) => setChangeMessage(event.target.value)}
+                    placeholder="Например: обновлены предложения аренды H200"
+                  />
+                </label>
+                <details>
+                  <summary>Проверить изменения перед сохранением</summary>
+                  <DiffPreview before={base} after={draft} />
+                </details>
+              </section>
+            )}
+          </section>
+        </div>
+      )}
+      <footer className="footer-note">
+        <span>
+          {store.mode === "shared"
+            ? "Общий каталог · доступ по ролям · история ревизий"
+            : "Локальный каталог · черновики и история в этом браузере"}
+        </span>
+        <span>Ревизия {currentRevision}</span>
+      </footer>
+    </main>
+  );
 }

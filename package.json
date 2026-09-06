@@ -1,25 +1,37 @@
 {
   "name": "gpu-calculator",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsx --test lib/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "test": "tsx --test lib/*.test.ts server/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "lucide-react": "^1.31.0",
-    "next": "16.2.6",
+    "next": "16.3.4",
+    "pg": "^8.23.0",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.19.19",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "jsdom": "^26.1.0",
+    "pg-mem": "^3.0.14",
+    "prettier": "^3.9.6",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
