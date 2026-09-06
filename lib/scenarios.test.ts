@@ -10,6 +10,8 @@ import {
   parseScenario,
   readScenarios,
   scenarioReport,
+  CALCULATOR_VERSION,
+  RECALCULABLE_VERSIONS,
 } from "./scenarios";
 
 test("scenario freezes input, catalogue, source date and reproduces totals", () => {
@@ -79,6 +81,11 @@ test("input parser rejects untyped payloads and retains small valid workload sha
   assert.equal(parseInput({ ...input, years: "3" }).value, null);
   assert.equal(parseInput({ ...input, taskIds: ["a", "a"] }).value, null);
   assert.equal(parseInput({ ...input, rentalMode: "free" }).value, null);
+  assert.equal(
+    parseInput({ ...input, hoursMonth: 720 }).value?.hoursMonth,
+    720,
+  );
+  assert.equal(parseInput({ ...input, hoursMonth: 730 }).value, null);
   assert.equal(parseInput({ ...input, asOf: "2026-02-30" }).value, null);
   assert.equal(
     parseInput({ ...input, asOf: "2026-02-28T25:00:00Z" }).value,
@@ -100,7 +107,8 @@ test("default input follows published calculation defaults and returns an indepe
   const input = defaultInput(config);
   assert.equal(input.concurrency, 13);
   assert.equal(input.inputTokens, 16384);
-  assert.equal(input.rentalMode, "gpu-hour");
+  assert.equal(input.hoursMonth, 720);
+  assert.equal(input.rentalMode, "dedicated-node");
   input.taskIds.length = 0;
   assert.ok(scenarioInput(config, id).taskIds.length > 0);
   assert.throws(() => scenarioInput(config, "missing"), /Сценарий недоступен/);
@@ -119,7 +127,7 @@ test("old algorithm snapshots require an explicit recalculation into a new immut
   const migrated = migrateScenario(old, new Date("2026-09-07T00:00:00Z"));
   assert.ok(migrated.value, migrated.errors.join(" "));
   assert.notEqual(migrated.value.id, old.id);
-  assert.equal(migrated.value.calculatorVersion, "4.0.0");
+  assert.equal(migrated.value.calculatorVersion, CALCULATOR_VERSION);
   assert.equal(migrated.value.input.asOf, "2026-09-07T00:00:00.000Z");
   assert.deepEqual(old, original);
   assert.equal(
@@ -130,4 +138,59 @@ test("old algorithm snapshots require an explicit recalculation into a new immut
     migrateScenario({ ...old, input: { ...old.input, concurrency: -1 } }).value,
     null,
   );
+});
+
+test("both former calculator versions require explicit migration and cannot export current-code results as old snapshots", () => {
+  const config = cloneDefaultConfig();
+  const scenario = createScenario(
+    "Постоянная работа",
+    config,
+    defaultInput(config),
+  );
+  for (const calculatorVersion of RECALCULABLE_VERSIONS) {
+    const old = {
+      ...scenario,
+      calculatorVersion,
+      input: {
+        ...scenario.input,
+        hoursMonth: 730,
+        rentalMode: "dedicated-node" as const,
+      },
+    };
+    const original = JSON.stringify(old);
+    assert.equal(parseScenario(old).value, null);
+    assert.throws(() => scenarioReport(old), /требует явного пересчёта/);
+    const migrated = migrateScenario(old, new Date("2026-09-07T00:00:00Z"));
+    assert.ok(migrated.value, migrated.errors.join(" "));
+    assert.equal(migrated.value.calculatorVersion, "5.0.0");
+    assert.equal(migrated.value.input.hoursMonth, 720);
+    assert.notEqual(migrated.value.id, old.id);
+    assert.equal(JSON.stringify(old), original);
+    assert.ok(scenarioReport(migrated.value).result.rentTco > 0);
+  }
+  assert.equal(
+    migrateScenario({
+      ...scenario,
+      calculatorVersion: "4.0.0",
+      input: { ...scenario.input, hoursMonth: 731 },
+    }).value,
+    null,
+  );
+});
+
+test("explicit historical recalculation preserves shorter recorded workload, while fresh defaults remain 720 hours", () => {
+  const config = cloneDefaultConfig();
+  const old = {
+    ...createScenario("Исторический пилот", config, {
+      ...defaultInput(config),
+      hoursMonth: 160,
+      rentalMode: "gpu-hour",
+    }),
+    calculatorVersion: "4.0.0",
+  };
+  const migrated = migrateScenario(old);
+  assert.equal(migrated.value?.input.hoursMonth, 160);
+  assert.equal(migrated.value?.input.rentalMode, "gpu-hour");
+  assert.equal(defaultInput(config).hoursMonth, 720);
+  assert.equal(defaultInput(config).rentalMode, "dedicated-node");
 });

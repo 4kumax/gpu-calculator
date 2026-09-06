@@ -181,19 +181,28 @@ test("добавление предельной задачи требует Kimi
   const details = document.querySelector<HTMLDetailsElement>(
     "#calculation-details",
   )!;
-  ui.fireEvent.click(details.querySelector("summary")!);
-  assert.equal(details.open, true);
+  assert.equal(
+    details.open,
+    true,
+    "all calculation parameters are visible by default",
+  );
   const values = new Map(
     Array.from(details.querySelectorAll("dl > div")).map((row) => [
       row.querySelector("dt")?.textContent,
       row.querySelector("dd")?.textContent,
     ]),
   );
-  assert.equal(values.get("Одновременные запросы"), String(input.concurrency));
-  assert.equal(values.get("Работа в месяц"), `${input.hoursMonth} ч`);
   assert.equal(
-    values.get("Вход / ответ, токенов"),
-    `${input.inputTokens!.toLocaleString("ru-RU")} / ${input.outputTokens!.toLocaleString("ru-RU")}`,
+    values.get("Одновременные запросы в пике"),
+    String(input.concurrency),
+  );
+  assert.equal(
+    values.get("Использование оборудования"),
+    `${input.hoursMonth} ч/мес.`,
+  );
+  assert.equal(
+    values.get("Учтённый вход запроса"),
+    `${input.inputTokens!.toLocaleString("ru-RU")} токенов`,
   );
   assert.equal(
     ui.screen.queryByRole("spinbutton"),
@@ -214,7 +223,7 @@ test("пустой выбор не выдаёт рекомендацию, выб
     ui.screen.getByRole("heading", { name: "Выберите задачи для сравнения" }),
   );
   assert.equal(document.querySelector("#decision-title"), null);
-  assert.equal(ui.screen.queryByText("Оптимальный вариант по сценарию"), null);
+  assert.equal(ui.screen.queryByText("Рекомендация для выбранных задач"), null);
   assert.equal(
     (
       ui.screen.getByRole("button", {
@@ -267,7 +276,9 @@ test("переход в Параметры сохраняет выбранные
   );
   ui.fireEvent.click(taskCheckbox("Предельные мультимодальные задачи"));
   ui.fireEvent.change(
-    ui.screen.getByRole("spinbutton", { name: "Использование, часов в месяц" }),
+    ui.screen.getByRole("spinbutton", {
+      name: "Работа под нагрузкой, ч/мес. (720 — круглосуточно)",
+    }),
     { target: { value: "320" } },
   );
   ui.fireEvent.change(
@@ -565,12 +576,12 @@ test("неподтверждённая связка помечена огран�
   ui.fireEvent.click(ui.screen.getByRole("button", { name: "GPU" }));
   const row = chooseButton(unsupported).closest("tr")!;
   assert.ok(ui.within(row).getByRole("button", { name: "Нужна проверка" }));
-  assert.equal(ui.within(row).queryByText("Оптимальный"), null);
+  assert.equal(ui.within(row).queryByText("Рекомендация"), null);
   ui.fireEvent.click(chooseButton(unsupported));
   const card = decisionCard();
   assert.ok(ui.within(card).getByText("Вариант требует проверки"));
   assert.equal(
-    ui.within(card).queryByText("Оптимальный вариант по сценарию"),
+    ui.within(card).queryByText("Рекомендация для выбранных задач"),
     null,
   );
   assert.ok(

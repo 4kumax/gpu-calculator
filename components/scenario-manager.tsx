@@ -5,6 +5,7 @@ import { Download, Save, Upload } from "lucide-react";
 import { calculate, compactRub, type CalculationInput } from "@/lib/calculator";
 import { type AppConfig } from "@/lib/config";
 import {
+  CALCULATOR_VERSION,
   createScenario,
   downloadJson,
   MAX_SCENARIOS,
@@ -258,7 +259,7 @@ export function ScenarioManager({
                 const checked = readScenarios(JSON.stringify(migrated));
                 if (!checked.value) throw new Error(checked.errors.join(" "));
                 localStorage.setItem(
-                  `${SCENARIO_STORAGE_KEY}:before-v4:${Date.now()}`,
+                  `${SCENARIO_STORAGE_KEY}:before-v${CALCULATOR_VERSION}:${Date.now()}`,
                   recovery,
                 );
                 localStorage.setItem(

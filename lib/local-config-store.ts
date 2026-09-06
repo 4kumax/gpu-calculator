@@ -106,7 +106,9 @@ export function readLocalHistory(storage: StorageLike): CatalogHistoryEntry[] {
   return rows.flatMap((row) => {
     if (!row || typeof row !== "object") return [];
     const entry = row as Record<string, unknown>;
-    const parsed = parseConfig(entry.config);
+    const parsed = parseConfig(entry.config, {
+      preserveCalculationDefaults: true,
+    });
     return parsed.config && typeof entry.message === "string"
       ? [
           {
@@ -233,6 +235,7 @@ function sameShape(reference: unknown, candidate: unknown): boolean {
       ([key, value]) =>
         ([
           "checkpointWeightGb",
+          "catalogUpdateVersion",
           "benchmark",
           "correctAnswerPct",
           "extractionErrorPct",

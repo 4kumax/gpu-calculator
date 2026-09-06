@@ -12,6 +12,9 @@ import {
   modelWeightGb,
 } from "@/lib/config";
 
+/** Planning month: 30 days of continuous operation and dedicated rental billing. */
+export const HOURS_PER_MONTH = 720;
+
 export type CalculationInput = {
   taskIds: string[];
   modelId: string | "auto";
@@ -257,10 +260,10 @@ function validateInput(input: CalculationInput): void {
   if (
     !Number.isFinite(input.hoursMonth) ||
     input.hoursMonth < 0 ||
-    input.hoursMonth > 730
+    input.hoursMonth > HOURS_PER_MONTH
   )
     throw new Error(
-      "Использование должно быть в диапазоне от 0 до 730 часов в месяц.",
+      "Использование должно быть в диапазоне от 0 до 720 часов в месяц.",
     );
   if (!Number.isSafeInteger(input.years) || input.years < 1 || input.years > 5)
     throw new Error("Горизонт расчёта должен быть целым числом от 1 до 5 лет.");
@@ -611,12 +614,13 @@ function costsAtHours(
   const contingency = (capex * a.contingencyPct) / 100;
   const support = ((capex * a.supportPctCapexYear) / 100) * input.years;
   const averagePowerFactor =
-    a.idlePowerPct / 100 + ((1 - a.idlePowerPct / 100) * hoursMonth) / 730;
+    a.idlePowerPct / 100 +
+    ((1 - a.idlePowerPct / 100) * hoursMonth) / HOURS_PER_MONTH;
   const monthlyPowerRub =
     (workloadNodes * averagePowerFactor +
       (reserveNodes * a.idlePowerPct) / 100) *
     gpu.nodePowerKw *
-    730 *
+    HOURS_PER_MONTH *
     a.pue *
     a.electricityRubKwh;
   const electricity = monthlyPowerRub * months;
@@ -637,12 +641,14 @@ function costsAtHours(
   const dedicated = input.rentalMode === "dedicated-node";
   const compute =
     (dedicated
-      ? workloadNodes * gpu.nodeGpuCount * 730
+      ? workloadNodes * gpu.nodeGpuCount * HOURS_PER_MONTH
       : gpuCount * hoursMonth) *
     gpu.rentPerGpuHourRub *
     months;
   const reserveHours =
-    dedicated || input.reserveRentalMode === "always-on" ? 730 : hoursMonth;
+    dedicated || input.reserveRentalMode === "always-on"
+      ? HOURS_PER_MONTH
+      : hoursMonth;
   const reserve =
     reserveNodes *
     gpu.nodeGpuCount *
@@ -687,10 +693,10 @@ function estimateCosts(
 ): CostEstimate {
   const estimate = costsAtHours(config, input, plan, input.hoursMonth);
   const zero = costsAtHours(config, input, plan, 0);
-  const full = costsAtHours(config, input, plan, 730);
+  const full = costsAtHours(config, input, plan, HOURS_PER_MONTH);
   const intercept = zero.buyTco - zero.rentTco;
   const end = full.buyTco - full.rentTco;
-  const slope = (end - intercept) / 730;
+  const slope = (end - intercept) / HOURS_PER_MONTH;
   const epsilon =
     Math.max(
       1,
@@ -701,7 +707,7 @@ function estimateCosts(
     ) * 1e-12;
   let breakEvenHoursMonth: number | null = null;
   let breakEvenDirection: BreakEvenDirection;
-  if (Math.abs(slope * 730) <= epsilon)
+  if (Math.abs(slope * HOURS_PER_MONTH) <= epsilon)
     breakEvenDirection =
       Math.abs(intercept) <= epsilon
         ? "equal"
@@ -715,7 +721,10 @@ function estimateCosts(
   } else if (intercept >= -epsilon && end >= -epsilon)
     breakEvenDirection = "never";
   else {
-    breakEvenHoursMonth = Math.min(730, Math.max(0, -intercept / slope));
+    breakEvenHoursMonth = Math.min(
+      HOURS_PER_MONTH,
+      Math.max(0, -intercept / slope),
+    );
     breakEvenDirection = slope < 0 ? "above" : "below";
   }
   return { ...estimate, breakEvenHoursMonth, breakEvenDirection };
@@ -945,7 +954,7 @@ export function calculate(
     warnings.push("Характеристики модели: дата источника находится в будущем.");
   if (input.rentalMode === "dedicated-node")
     warnings.push(
-      "Выделенный узел: оплачиваются все GPU узла 730 часов в месяц; стоимость выведена из тарифа за GPU-час и требует отдельного предложения поставщика.",
+      "Выделенный узел: оплачиваются все GPU узла 720 часов в месяц; стоимость выведена из тарифа за GPU-час и требует отдельного предложения поставщика.",
     );
   for (const candidate of candidates.values())
     if (candidate.plan.reasons.length)
@@ -1087,7 +1096,7 @@ export function calculateSensitivity(
       },
     };
     const atZero = costsAtHours(config, input, plan, 0);
-    const atFull = costsAtHours(config, input, plan, 730);
+    const atFull = costsAtHours(config, input, plan, HOURS_PER_MONTH);
     const moreHoursFavorPurchase =
       atFull.buyTco - atFull.rentTco < atZero.buyTco - atZero.rentTco;
     // A dedicated rental has fixed compute cost: more operating hours can favor renting.
@@ -1098,7 +1107,10 @@ export function calculateSensitivity(
     const hoursMonth =
       definition.id === "base"
         ? input.hoursMonth
-        : Math.min(730, input.hoursMonth * (increaseHours ? 1.25 : 0.75));
+        : Math.min(
+            HOURS_PER_MONTH,
+            input.hoursMonth * (increaseHours ? 1.25 : 0.75),
+          );
     const costs = estimateCosts(config, { ...input, hoursMonth }, plan);
     return {
       ...definition,

@@ -5,6 +5,7 @@ import { JSDOM } from "jsdom";
 import { calculate, type CalculationInput } from "./calculator";
 import { cloneDefaultConfig } from "./config";
 import {
+  CALCULATOR_VERSION,
   createScenario,
   defaultInput,
   parseScenario,
@@ -307,7 +308,12 @@ test("corrupt scenario storage remains intact and blocks a save until recovery",
 test("legacy scenario library changes only after explicit recalculation and retains its original backup", async () => {
   const config = cloneDefaultConfig();
   const input = scenarioInput();
-  const { scenarioPresets, defaultScenarioId, ...previousConfig } = config;
+  const {
+    scenarioPresets,
+    defaultScenarioId,
+    catalogUpdateVersion,
+    ...previousConfig
+  } = config;
   const { defaultInputTokens, defaultOutputTokens, ...previousAssumptions } =
     config.assumptions;
   const legacyConfig = {
@@ -328,7 +334,7 @@ test("legacy scenario library changes only after explicit recalculation and reta
   localStorage.setItem(SCENARIO_STORAGE_KEY, original);
   const backupKeys = () =>
     Object.keys(localStorage).filter((key) =>
-      key.startsWith(`${SCENARIO_STORAGE_KEY}:before-v4:`),
+      key.startsWith(`${SCENARIO_STORAGE_KEY}:before-v${CALCULATOR_VERSION}:`),
     );
   const loaded: Scenario[] = [];
   ui.render(
@@ -341,7 +347,7 @@ test("legacy scenario library changes only after explicit recalculation and reta
 
   assert.match(
     ui.screen.getByRole("alert").textContent!,
-    /требуется версия калькулятора 3\.0\.0.*Текущая версия — 4\.0\.0/,
+    /требуется версия калькулятора 3\.0\.0.*Текущая версия — 5\.0\.0/,
   );
   const recalculate = ui.screen.getByRole("button", {
     name: "Пересчитать старые сценарии с резервной копией",
@@ -392,7 +398,7 @@ test("legacy scenario library changes only after explicit recalculation and reta
   for (const [index, old] of previous.entries()) {
     const migrated: Scenario = restored.value[index];
     assert.notEqual(migrated.id, old.id);
-    assert.equal(migrated.calculatorVersion, "4.0.0");
+    assert.equal(migrated.calculatorVersion, CALCULATOR_VERSION);
     assert.equal(migrated.config.schemaVersion, 4);
     assert.equal(migrated.name, `${old.name} · пересчёт`);
     assert.equal(migrated.input.inputTokens, defaultInputTokens);

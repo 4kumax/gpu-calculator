@@ -255,6 +255,48 @@ test("login/logout use only HttpOnly cookies and mutation origin checks", async 
   );
 });
 
+test("current catalogues receive the continuous-use update while historical revisions retain original values", async () => {
+  const { store, pool } = memoryStore();
+  try {
+    await store.current();
+    const legacy = cloneDefaultConfig();
+    delete legacy.catalogUpdateVersion;
+    legacy.revision = 1;
+    legacy.gpus = legacy.gpus.filter((gpu) => gpu.id !== "h20");
+    legacy.assumptions.defaultHoursMonth = 160;
+    const defaults = legacy.scenarioPresets.find(
+      (preset) => preset.id === legacy.defaultScenarioId,
+    )!;
+    defaults.input.hoursMonth = 160;
+    defaults.input.rentalMode = "gpu-hour";
+    await pool.query(
+      "INSERT INTO gpu_catalog_current (id, revision, config) VALUES (1, 1, $1::jsonb)",
+      [JSON.stringify(legacy)],
+    );
+    await pool.query(
+      "INSERT INTO gpu_catalog_history (revision, updated_at, actor, role, message, config) VALUES (1, $1, 'editor', 'editor', 'Original catalogue', $2::jsonb)",
+      [legacy.updatedAt, JSON.stringify(legacy)],
+    );
+    assert.deepEqual((await store.snapshot(1))?.config, legacy);
+    const current = await store.current();
+    assert.equal(current.assumptions.defaultHoursMonth, 720);
+    assert.ok(current.gpus.some((gpu) => gpu.id === "h20"));
+    assert.equal(
+      current.scenarioPresets.find(
+        (preset) => preset.id === current.defaultScenarioId,
+      )?.input.rentalMode,
+      "dedicated-node",
+    );
+    assert.deepEqual(
+      (await store.snapshot(1))?.config,
+      legacy,
+      "reading the updated live catalogue must not rewrite history",
+    );
+  } finally {
+    await pool.end();
+  }
+});
+
 test("catalogue API validates unknown input, publishes explicitly and preserves historical snapshots", async () => {
   const { store, pool } = memoryStore();
   try {

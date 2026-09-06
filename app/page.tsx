@@ -354,74 +354,89 @@ export default function CalculatorPage() {
           {message}
         </p>
       )}
-      <TaskSelector
-        tasks={activeConfig.tasks}
-        selectedIds={input.taskIds}
-        onChange={changeTasks}
-      />
-      <div className="scenario-context">
-        <div>
-          <h2>
-            {snapshot
-              ? snapshot.name
-              : `Выбрано задач: ${input.taskIds.length}`}
-          </h2>
-          <span>
-            {snapshot
-              ? "Сохранённые параметры и цены"
-              : `Единый расчёт · ${input.years * 12} месяцев · модель должна подходить для всех задач`}
-          </span>
-        </div>
-        <div className="context-actions">
-          <button
-            className="text-button"
-            disabled={!selected?.result}
-            onClick={() => {
-              if (savedRef.current) {
-                savedRef.current.open = true;
-                savedRef.current.scrollIntoView({
-                  behavior: "smooth",
-                  block: "start",
-                });
-              }
-            }}
-          >
-            <FolderOpen size={14} />
-            Сохранить вариант
-          </button>
-          <button
-            className="text-button"
-            disabled={!selected?.result}
-            onClick={exportCalculation}
-          >
-            <Download size={14} />
-            Экспорт
-          </button>
-        </div>
-      </div>
-      {!input.taskIds.length ? (
-        <div className="empty-state task-empty">
-          <h2>Выберите задачи для сравнения</h2>
-          <p>
-            Подбор модели и расчёт стоимости появятся после выбора хотя бы одной
-            задачи.
+      <div className="planning-columns">
+        <aside className="planning-tasks" aria-label="Выбор задач">
+          <TaskSelector
+            tasks={activeConfig.tasks}
+            selectedIds={input.taskIds}
+            onChange={changeTasks}
+          />
+          <p className="planning-help">
+            Модель подбирается для всех отмеченных задач. Нагрузка, цены и
+            условия расчёта задаются в <Link href="/settings">Параметрах</Link>.
           </p>
-        </div>
-      ) : comparison ? (
-        <ExecutiveComparison
-          key={scope}
-          config={activeConfig}
-          input={input}
-          comparison={comparison}
-          selected={selected}
-          onSelect={(row: ComparisonRow) => setChoice({ id: row.id, scope })}
-        />
-      ) : (
-        <div className="error-box" role="alert">
-          <p>{calculation.error}</p>
-          <Link href="/settings">Проверить параметры расчёта</Link>
-        </div>
-      )}
+        </aside>
+        <section
+          className="planning-results"
+          aria-label="Результаты и сравнение"
+        >
+          <div className="scenario-context">
+            <div>
+              <h2>
+                {snapshot
+                  ? snapshot.name
+                  : `Выбрано задач: ${input.taskIds.length}`}
+              </h2>
+              <span>
+                {snapshot
+                  ? "Сохранённые параметры и цены"
+                  : `Единый расчёт · ${input.years * 12} месяцев · модель должна подходить для всех задач`}
+              </span>
+            </div>
+            <div className="context-actions">
+              <button
+                className="text-button"
+                disabled={!selected?.result}
+                onClick={() => {
+                  if (savedRef.current) {
+                    savedRef.current.open = true;
+                    savedRef.current.scrollIntoView({
+                      behavior: "smooth",
+                      block: "start",
+                    });
+                  }
+                }}
+              >
+                <FolderOpen size={14} />
+                Сохранить вариант
+              </button>
+              <button
+                className="text-button"
+                disabled={!selected?.result}
+                onClick={exportCalculation}
+              >
+                <Download size={14} />
+                Экспорт
+              </button>
+            </div>
+          </div>
+          {!input.taskIds.length ? (
+            <div className="empty-state task-empty">
+              <h2>Выберите задачи для сравнения</h2>
+              <p>
+                Подбор модели и расчёт стоимости появятся после выбора хотя бы
+                одной задачи.
+              </p>
+            </div>
+          ) : comparison ? (
+            <ExecutiveComparison
+              key={scope}
+              config={activeConfig}
+              input={input}
+              comparison={comparison}
+              selected={selected}
+              onSelect={(row: ComparisonRow) =>
+                setChoice({ id: row.id, scope })
+              }
+            />
+          ) : (
+            <div className="error-box" role="alert">
+              <p>{calculation.error}</p>
+              <Link href="/settings">Проверить параметры расчёта</Link>
+            </div>
+          )}
+        </section>
+      </div>
       <details className="saved-workspace quiet-details" ref={savedRef}>
         <summary>
           Сохранённые варианты и сравнение сценариев <ChevronDown size={16} />

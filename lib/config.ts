@@ -182,6 +182,8 @@ export type BusinessScenarioPreset = {
 export type AppConfig = {
   schemaVersion: 4;
   catalogVersion: string;
+  /** One-time live-catalog updates; absent in older immutable snapshots. */
+  catalogUpdateVersion?: 1;
   revision: number;
   updatedAt: string;
   assumptions: Assumptions;
@@ -198,6 +200,7 @@ type LegacyAppConfig = Omit<
   AppConfig,
   | "schemaVersion"
   | "catalogVersion"
+  | "catalogUpdateVersion"
   | "gpus"
   | "deploymentProfiles"
   | "qualityAssessments"
@@ -1329,6 +1332,44 @@ const LEGACY_DEFAULT_CONFIG: LegacyAppConfig = {
   ],
 };
 
+export function createH20Gpu(): GpuConfig {
+  return {
+    id: "h20",
+    enabled: true,
+    name: "H20 96 ГБ",
+    vendor: "NVIDIA",
+    memoryGb: 96,
+    nodeGpuCount: 8,
+    nodePriceRub: 24_000_000,
+    rentPerGpuHourRub: 350,
+    nodePowerKw: 6.5,
+    memoryBandwidthTb: 0,
+    interconnect: "Требует подтверждения для выбранного сервера",
+    priceKind: "Инженерная оценка",
+    sourceLabel:
+      "NVIDIA AI Enterprise: H20 SXM5 96GB; источник подтверждает память, не цены",
+    sourceUrl:
+      "https://docs.nvidia.com/ai-enterprise/release-6/6.2/appendix/vgpu.html",
+    sourceDate: "2026-09-06",
+    purchaseQuote: {
+      kind: "Инженерная оценка",
+      sourceLabel: "Плановая стоимость; предложение поставщика не получено",
+      sourceUrl: "",
+      sourceDate: "",
+      terms:
+        "24 млн ₽ за условный сервер с 8 × H20 96 ГБ и потреблением 6,5 кВт — редактируемые инженерные допущения, не рыночная котировка и не замер. НДС, состав, поставку и межсоединение нужно подтвердить. Пропускная способность памяти не подтверждена и оставлена 0; в расчёте не используется. Характеристики памяти: https://docs.nvidia.com/ai-enterprise/release-6/6.2/appendix/vgpu.html",
+    },
+    rentalQuote: {
+      kind: "Инженерная оценка",
+      sourceLabel: "Плановый тариф; предложение аренды не получено",
+      sourceUrl: "",
+      sourceDate: "",
+      terms:
+        "350 ₽ за GPU-час — редактируемое допущение, не опубликованный тариф. Для круглосуточного выделенного узла расчёт оплачивает 8 GPU по 720 часов в месяц. Состав сервера, НДС и доступность нужно подтвердить у поставщика.",
+    },
+  };
+}
+
 export function createEstimatedProfile(
   model: ModelConfig,
   gpu: Pick<GpuConfig, "id">,
@@ -1526,6 +1567,36 @@ function normalizeGeneratedCalculationDefaults(config: AppConfig): boolean {
   return true;
 }
 
+/** Apply the user's 720-hour always-on policy once; never overwrite later explicit edits. */
+function applyCatalogUpdate(config: AppConfig): {
+  updated: boolean;
+  h20Added: boolean;
+} {
+  if (config.catalogUpdateVersion === 1)
+    return { updated: false, h20Added: false };
+  const current = config.scenarioPresets.find(
+    (preset) => preset.id === config.defaultScenarioId,
+  );
+  if (current)
+    current.input = {
+      ...current.input,
+      hoursMonth: 720,
+      rentalMode: "dedicated-node",
+      reserveRentalMode: "always-on",
+    };
+  config.assumptions.defaultHoursMonth = 720;
+  const existingH20 = config.gpus.some(
+    (gpu) =>
+      gpu.id === "h20" ||
+      (gpu.vendor === "NVIDIA" &&
+        gpu.memoryGb === 96 &&
+        /(^|\W)H20(\W|$)/i.test(gpu.name)),
+  );
+  if (!existingH20) config.gpus.push(createH20Gpu());
+  config.catalogUpdateVersion = 1;
+  return { updated: true, h20Added: !existingH20 };
+}
+
 function migrateV2(legacy: LegacyAppConfig): AppConfig {
   return {
     ...legacy,
@@ -1559,7 +1630,7 @@ function migrateV2(legacy: LegacyAppConfig): AppConfig {
         sourceDate: "",
         kind: "Инженерная оценка",
         terms:
-          "Численный тариф перенесён из v2 без отдельного подтверждающего источника аренды. Расчёт за GPU-час; для выделенного узла оплачивается полный узел 730 часов/месяц.",
+          "Численный тариф перенесён из v2 без отдельного подтверждающего источника аренды. Расчёт за GPU-час; для выделенного узла оплачивается полный узел 720 часов/месяц.",
       },
     })),
     deploymentProfiles: legacy.models.map((model) =>
@@ -1569,9 +1640,11 @@ function migrateV2(legacy: LegacyAppConfig): AppConfig {
   };
 }
 
+const INITIAL_DEFAULT_CONFIG = migrateV2(LEGACY_DEFAULT_CONFIG);
+applyCatalogUpdate(INITIAL_DEFAULT_CONFIG);
 export const DEFAULT_CONFIG: AppConfig = {
-  ...migrateV2(LEGACY_DEFAULT_CONFIG),
-  catalogVersion: "2026-09-06.3",
+  ...INITIAL_DEFAULT_CONFIG,
+  catalogVersion: "2026-09-06.4",
   updatedAt: "2026-09-06T00:00:00.000Z",
 };
 
@@ -1848,14 +1921,21 @@ function validateVersion(value: unknown, version: 2 | 3 | 4): string[] {
   if (version >= 3) rootRules.catalogVersion = text;
   if (version === 4) rootRules.defaultScenarioId = text;
   if (
-    !shape(value, "config", rootRules, errors, {}, [
-      "assumptions",
-      "models",
-      "gpus",
-      "tasks",
-      ...(version >= 3 ? ["deploymentProfiles", "qualityAssessments"] : []),
-      ...(version === 4 ? ["scenarioPresets"] : []),
-    ])
+    !shape(
+      value,
+      "config",
+      rootRules,
+      errors,
+      version === 4 ? { catalogUpdateVersion: enumeration([1]) } : {},
+      [
+        "assumptions",
+        "models",
+        "gpus",
+        "tasks",
+        ...(version >= 3 ? ["deploymentProfiles", "qualityAssessments"] : []),
+        ...(version === 4 ? ["scenarioPresets"] : []),
+      ],
+    )
   )
     return errors;
   const assumptionRules = { ...ASSUMPTION_RULES } as Record<string, Rule>;
@@ -2114,8 +2194,12 @@ export function parseConfig(
         : (cloned as AppConfig);
   const restoredTaskDefaults =
     version === 4 &&
+    config.catalogUpdateVersion !== 1 &&
     !options.preserveCalculationDefaults &&
     normalizeGeneratedCalculationDefaults(config);
+  const catalogUpdate = options.preserveCalculationDefaults
+    ? { updated: false, h20Added: false }
+    : applyCatalogUpdate(config);
   const correctedBuiltinKimi =
     version < 4 &&
     config.models.some((model) => {
@@ -2134,14 +2218,40 @@ export function parseConfig(
       }
       return matches;
     });
-  const migrationErrors = version < 4 ? validateConfig(config) : [];
+  const migrationErrors =
+    version < 4 || catalogUpdate.updated || restoredTaskDefaults
+      ? validateConfig(config)
+      : [];
+  if (!options.preserveCalculationDefaults) {
+    const active = config.scenarioPresets.find(
+      (preset) => preset.id === config.defaultScenarioId,
+    );
+    if (active && active.input.hoursMonth > 720)
+      migrationErrors.push(
+        "Текущие параметры расчёта: hoursMonth не может превышать 720 часов в месяц.",
+      );
+    if (config.assumptions.defaultHoursMonth > 720)
+      migrationErrors.push(
+        "assumptions.defaultHoursMonth: не может превышать 720 часов в месяц.",
+      );
+  }
   if (migrationErrors.length)
     return { config: null, errors: migrationErrors, warnings: [] };
   return {
     config,
     errors: [],
-    warnings:
-      version < 4
+    warnings: [
+      ...(catalogUpdate.updated
+        ? [
+            "Для постоянной работы однократно установлены 720 часов в месяц, аренда выделенного узла и постоянная оплата резерва. Остальные пользовательские параметры сохранены.",
+          ]
+        : []),
+      ...(catalogUpdate.h20Added
+        ? [
+            "В каталог добавлен NVIDIA H20 96 ГБ. Цены и серверная конфигурация являются инженерными оценками; профили запуска моделей автоматически не создаются.",
+          ]
+        : []),
+      ...(version < 4
         ? [
             `Каталог v${version} перенесён в v4 с сохранением цен и характеристик. Сохранены исходные сценарии использования и добавлены общие редактируемые параметры расчёта. Нагрузка по умолчанию — 8192 токена входа и 1024 ответа; требования задач к максимальному контексту больше не задают фактическую длину запроса.`,
             ...(correctedBuiltinKimi
@@ -2159,6 +2269,7 @@ export function parseConfig(
           ? [
               "Восстановлен выбор исходных сценариев использования. Прежние автоматически созданные группы сохранены в каталоге; пользовательские параметры не изменены.",
             ]
-          : [],
+          : []),
+    ],
   };
 }

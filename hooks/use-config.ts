@@ -409,7 +409,9 @@ export function useConfig() {
             ? body.error
             : "Не удалось загрузить ревизию.",
         );
-      const parsed = parseConfig(body.config);
+      const parsed = parseConfig(body.config, {
+        preserveCalculationDefaults: true,
+      });
       if (!parsed.config) throw new Error(parsed.errors.join(" "));
       return parsed.config;
     },

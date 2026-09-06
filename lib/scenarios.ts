@@ -1,7 +1,12 @@
-import { calculate, type CalculationInput } from "./calculator";
+import {
+  calculate,
+  HOURS_PER_MONTH,
+  type CalculationInput,
+} from "./calculator";
 import { parseConfig, type AppConfig, type ScenarioInput } from "./config";
 
-export const CALCULATOR_VERSION = "4.0.0";
+export const CALCULATOR_VERSION = "5.0.0";
+export const RECALCULABLE_VERSIONS = ["3.0.0", "4.0.0"] as const;
 export const INPUT_STORAGE_KEY = "gpu-calculator:input:v1";
 export const SCENARIO_STORAGE_KEY = "gpu-calculator:scenarios:v1";
 export const MAX_SCENARIOS = 20;
@@ -71,7 +76,10 @@ export function defaultInput(config: AppConfig): CalculationInput {
   return calculationDefaults(config);
 }
 
-export function parseInput(value: unknown): ParseResult<CalculationInput> {
+export function parseInput(
+  value: unknown,
+  options: { legacyHours?: boolean } = {},
+): ParseResult<CalculationInput> {
   if (!object(value))
     return { value: null, errors: ["Параметры расчёта должны быть объектом."] };
   const errors: string[] = [];
@@ -125,7 +133,7 @@ export function parseInput(value: unknown): ParseResult<CalculationInput> {
   enumeration("reserveMode", ["none", "nplus1"]);
   enumeration("rentalMode", ["gpu-hour", "dedicated-node"], true);
   enumeration("reserveRentalMode", ["active-hours", "always-on"], true);
-  numeric("hoursMonth", 0, 730, false);
+  numeric("hoursMonth", 0, options.legacyHours ? 730 : HOURS_PER_MONTH, false);
   numeric("years", 1, 5, true);
   numeric("concurrency", 1, 10000, true);
   numeric("largeModelSharePct", 0.001, 100, false);
@@ -169,15 +177,29 @@ export function migrateScenario(
   value: unknown,
   now = new Date(),
 ): ParseResult<Scenario> {
-  if (!object(value) || value.calculatorVersion !== "3.0.0")
+  if (
+    !object(value) ||
+    !RECALCULABLE_VERSIONS.some(
+      (version) => version === value.calculatorVersion,
+    )
+  )
     return {
       value: null,
-      errors: ["Для пересчёта поддерживаются только сценарии версии 3.0.0."],
+      errors: ["Для пересчёта поддерживаются сценарии версий 3.0.0 и 4.0.0."],
     };
+  // Read the previous month bound only in this explicit migration path. The
+  // original snapshot remains untouched; a 730-hour workload becomes 720 hours
+  // in the new 30-day planning month. Other historical workload choices remain.
+  const legacyInput = parseInput(value.input, { legacyHours: true });
+  if (!legacyInput.value) return { value: null, errors: legacyInput.errors };
   // Validate every original field; the deliberate version override authorizes current-code recalculation.
   const parsed = parseScenario({
     ...value,
     calculatorVersion: CALCULATOR_VERSION,
+    input: {
+      ...legacyInput.value,
+      hoursMonth: Math.min(HOURS_PER_MONTH, legacyInput.value.hoursMonth),
+    },
   });
   if (!parsed.value) return parsed;
   try {
@@ -326,6 +348,10 @@ export function readScenarios(raw: string | null): ParseResult<Scenario[]> {
 }
 
 export function scenarioReport(scenario: Scenario) {
+  if (scenario.calculatorVersion !== CALCULATOR_VERSION)
+    throw new Error(
+      `Сценарий версии ${scenario.calculatorVersion} требует явного пересчёта для версии ${CALCULATOR_VERSION}.`,
+    );
   return { ...scenario, result: calculate(scenario.config, scenario.input) };
 }
 

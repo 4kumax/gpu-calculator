@@ -145,10 +145,10 @@ export function ScenarioPresetsEditor({
             <option value="quality">Максимальный класс качества</option>
           </SelectField>
           <NumberField
-            label="Использование, часов в месяц"
+            label="Работа под нагрузкой, ч/мес. (720 — круглосуточно)"
             value={selected.input.hoursMonth}
             min={0}
-            max={730}
+            max={720}
             onChange={(value) =>
               input({ hoursMonth: value ?? selected.input.hoursMonth })
             }
@@ -184,7 +184,7 @@ export function ScenarioPresetsEditor({
           >
             <option value="gpu-hour">GPU по часам использования</option>
             <option value="dedicated-node">
-              Выделенный узел круглосуточно
+              Выделенный узел — 720 часов в месяц
             </option>
           </SelectField>
           <SelectField
@@ -197,7 +197,9 @@ export function ScenarioPresetsEditor({
               })
             }
           >
-            <option value="always-on">Круглосуточный резерв</option>
+            <option value="always-on">
+              Круглосуточный резерв — 720 ч/мес.
+            </option>
             <option value="active-hours">Только в часы использования</option>
           </SelectField>
         </div>

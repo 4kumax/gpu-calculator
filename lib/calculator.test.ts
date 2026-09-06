@@ -7,6 +7,7 @@ import {
   CalculationInput,
   evaluateModels,
   planModelDeployment,
+  HOURS_PER_MONTH,
 } from "./calculator";
 import { cloneDefaultConfig, DEFAULT_CONFIG, validateConfig } from "./config";
 
@@ -200,7 +201,7 @@ test("в точке окупаемости TCO покупки и аренды с
   assert.ok(Math.abs(atBreakEven.buyTco - atBreakEven.rentTco) < 1);
 });
 
-test("недостижимый порог окупаемости не выходит за пределы 730 ч/мес.", () => {
+test("недостижимый порог окупаемости не выходит за пределы 720 ч/мес.", () => {
   const config = cloneDefaultConfig();
   config.gpus.forEach((gpu) => {
     gpu.rentPerGpuHourRub = 0;
@@ -233,7 +234,7 @@ test("резервный N+1 узел потребляет только idle-м�
   const a = DEFAULT_CONFIG.assumptions;
   const expectedStandbyPowerRub =
     withReserve.gpu.nodePowerKw *
-    730 *
+    720 *
     (a.idlePowerPct / 100) *
     a.pue *
     a.electricityRubKwh;
@@ -597,7 +598,7 @@ test("break-even supports both crossing directions and never reports a false zer
   config.assumptions.electricityRubKwh = 2;
   const reverse = calculate(config, { ...input, rentalMode: "dedicated-node" });
   assert.equal(reverse.breakEvenDirection, "below");
-  assert.ok(Math.abs(reverse.breakEvenHoursMonth! - 365) < 1e-9);
+  assert.ok(Math.abs(reverse.breakEvenHoursMonth! - 360) < 1e-9);
   const equal = calculate(config, {
     ...input,
     rentalMode: "dedicated-node",
@@ -626,7 +627,7 @@ test("rent breakdown charges standby hours independently and dedicated nodes rou
     reserveRentalMode: "always-on",
   });
   assert.equal(active.rent.reserve, 4 * 2 * input.hoursMonth * 12);
-  assert.equal(standby.rent.reserve, 4 * 2 * 730 * 12);
+  assert.equal(standby.rent.reserve, 4 * 2 * 720 * 12);
   assert.equal(
     standby.rent.service,
     (standby.rent.compute + standby.rent.reserve) * 0.05,
@@ -636,8 +637,8 @@ test("rent breakdown charges standby hours independently and dedicated nodes rou
     rentalMode: "dedicated-node",
     reserveMode: "nplus1",
   });
-  assert.equal(dedicated.rent.compute, 4 * 2 * 730 * 12);
-  assert.equal(dedicated.rent.reserve, 4 * 2 * 730 * 12);
+  assert.equal(dedicated.rent.compute, 4 * 2 * 720 * 12);
+  assert.equal(dedicated.rent.reserve, 4 * 2 * 720 * 12);
   assert.equal(
     dedicated.rent.total,
     dedicated.rent.compute +
@@ -766,7 +767,7 @@ test("sensitivity chooses the favorable operating-hours direction for dedicated 
     conservative.buyTco - conservative.rentTco > base.buyTco - base.rentTco,
   );
   assert.equal(optimistic.hoursMonth, 525);
-  assert.equal(conservative.hoursMonth, 730);
+  assert.equal(conservative.hoursMonth, 720);
 });
 
 test("Kimi screenshot's 24 GPUs are reproduced only by the old million-token workload and weight estimate", () => {
@@ -888,4 +889,68 @@ test("resident MoE memory uses all experts rather than activated parameters", ()
     (model.totalParamsB * model.bitsPerWeight) / 8,
   );
   assert.equal(plan.checkpointWeightPerReplicaGb, 1400);
+});
+
+test("the 30-day month consistently bills 720 hours of power, dedicated rental and standby", () => {
+  const { config, gpu, input } = financialFixture();
+  gpu.nodeGpuCount = 4;
+  config.assumptions.idlePowerPct = 25;
+  const full = calculate(config, {
+    ...input,
+    hoursMonth: HOURS_PER_MONTH,
+    rentalMode: "dedicated-node",
+    reserveMode: "nplus1",
+    reserveRentalMode: "always-on",
+  });
+  assert.equal(HOURS_PER_MONTH, 720);
+  assert.equal(full.monthlyPowerRub, 720 + 720 * 0.25);
+  assert.equal(full.buy.electricity, (720 + 180) * 12);
+  assert.equal(full.rent.compute, 4 * 2 * 720 * 12);
+  assert.equal(full.rent.reserve, 4 * 2 * 720 * 12);
+  const idle = calculate(config, {
+    ...input,
+    hoursMonth: 0,
+    rentalMode: "dedicated-node",
+    reserveMode: "nplus1",
+    reserveRentalMode: "active-hours",
+  });
+  assert.equal(idle.monthlyPowerRub, 2 * 720 * 0.25);
+  assert.equal(
+    idle.rent.compute,
+    full.rent.compute,
+    "dedicated nodes are billed continuously even while idle",
+  );
+  assert.equal(idle.rent.reserve, full.rent.reserve);
+  for (const hoursMonth of [720.01, 730])
+    assert.throws(
+      () => calculate(config, { ...input, hoursMonth }),
+      /0 до 720/,
+    );
+});
+
+test("Kimi eight-GPU annual budget uses continuous billing rather than the former 160-hour rental estimate", () => {
+  const config = cloneDefaultConfig();
+  const result = calculate(
+    config,
+    withInput({
+      taskIds: ["frontier"],
+      modelId: "kimi-k3",
+      gpuId: "gb300",
+      hoursMonth: 720,
+      years: 1,
+      concurrency: 8,
+      inputTokens: 8192,
+      outputTokens: 1024,
+      rentalMode: "dedicated-node",
+      reserveRentalMode: "always-on",
+      reserveMode: "none",
+    }),
+  );
+  assert.equal(result.gpuCount, 8);
+  assert.equal(result.nodes, 2);
+  assert.equal(result.buy.equipment, 90_000_000);
+  assert.equal(result.buy.electricity, 1_953_504);
+  assert.equal(result.buyTco, 126_153_504);
+  assert.equal(result.rent.compute, 93_312_000);
+  assert.equal(result.rentTco, 103_617_600);
 });

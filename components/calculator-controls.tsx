@@ -227,7 +227,7 @@ export function CalculatorControls({
           <NumberField
             label="Работа под нагрузкой, ч/мес."
             value={input.hoursMonth}
-            max={730}
+            max={720}
             step={0.1}
             onChange={(hoursMonth) => onChange({ hoursMonth })}
           />
@@ -268,7 +268,7 @@ export function CalculatorControls({
             >
               <option value="gpu-hour">GPU по часам использования</option>
               <option value="dedicated-node">
-                Выделенные узлы, 730 ч/мес.
+                Выделенные узлы, 720 ч/мес.
               </option>
             </select>
             <small>
@@ -288,7 +288,7 @@ export function CalculatorControls({
                   })
                 }
               >
-                <option value="always-on">Постоянный резерв, 730 ч/мес.</option>
+                <option value="always-on">Постоянный резерв, 720 ч/мес.</option>
                 <option value="active-hours">
                   Резерв только в часы нагрузки
                 </option>

@@ -2602,3 +2602,417 @@ input:focus-visible,
     font-size: 11px;
   }
 }
+
+/* Tasks and the decision stay side by side; only totals carry strong emphasis. */
+.executive-shell {
+  max-width: 1720px;
+  padding: 30px 36px 24px;
+}
+.executive-page-heading {
+  margin-bottom: 28px;
+}
+.executive-page-heading h1 {
+  font-size: 30px;
+  font-weight: 550;
+}
+.planning-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 28px;
+}
+.planning-tasks {
+  min-width: 0;
+  position: sticky;
+  top: 92px;
+}
+.planning-results {
+  min-width: 0;
+}
+.planning-tasks .task-selection {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 22px;
+}
+.planning-tasks .use-case-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+.planning-tasks .use-case-card {
+  padding: 14px;
+  border-radius: 8px;
+}
+.planning-tasks .use-case-copy strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.planning-tasks .use-case-copy > span {
+  font-size: 12px;
+}
+.planning-tasks .task-selection-heading {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.planning-tasks .task-selection-heading h2 {
+  font-weight: 500;
+  font-size: 17px;
+}
+.planning-help {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #687487;
+  padding: 0 8px;
+  margin: 14px 0;
+}
+.planning-help a {
+  color: #4564bf;
+  text-decoration: none;
+}
+.planning-results .scenario-context {
+  margin: 0 0 14px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.planning-results .scenario-context h2 {
+  font-weight: 500;
+  font-size: 15px;
+}
+.planning-results .scenario-context > div > span {
+  display: block;
+  margin-top: 5px;
+  line-height: 1.5;
+  font-size: 11px;
+}
+.planning-results .context-actions {
+  margin-left: auto;
+  gap: 16px;
+}
+.planning-results .decision-card {
+  padding: 22px 22px 0;
+}
+.planning-results .decision-heading {
+  gap: 12px;
+}
+.planning-results .decision-heading h2 {
+  font-weight: 550;
+  font-size: 24px;
+  line-height: 1.25;
+}
+.planning-results .decision-hardware {
+  line-height: 1.7;
+  font-size: 12px;
+}
+.planning-results .decision-hardware > span {
+  color: #687487;
+}
+.decision-period {
+  flex-shrink: 0;
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  color: #687487;
+  font-size: 11px;
+}
+.planning-results .decision-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 24px 0 18px;
+}
+.planning-results .decision-metrics > div {
+  padding-right: 16px;
+}
+.planning-results .decision-metrics > div:nth-child(2) {
+  border: 0;
+  padding: 0;
+}
+.planning-results .decision-metrics strong {
+  font-size: clamp(25px, 2.3vw, 34px);
+}
+.planning-results .decision-metrics span,
+.planning-results .decision-metrics small {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #687487;
+}
+.planning-results .decision-metrics small + small {
+  margin-top: 5px;
+}
+.planning-results .decision-metrics .decision-saving {
+  grid-column: 1 / -1;
+  border-top: 1px solid #eef0f4;
+  padding: 14px 0 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+.planning-results .decision-saving strong {
+  font-size: 23px;
+  margin: 0;
+}
+.planning-results .decision-saving small {
+  margin-left: auto;
+}
+.planning-results .decision-footnote {
+  color: #687487;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.planning-results .options-card {
+  margin-top: 18px;
+}
+.planning-results .options-heading {
+  padding: 20px 20px 14px;
+  gap: 12px;
+}
+.planning-results .options-heading h2 {
+  font-size: 17px;
+  font-weight: 500;
+}
+.planning-results .segment-control button {
+  padding: 7px 15px;
+}
+.planning-results .comparison-toolbar {
+  padding: 0 20px 14px;
+  flex-wrap: wrap;
+  color: #687487;
+}
+.planning-results .executive-table {
+  min-width: 610px;
+}
+.planning-results .executive-table th,
+.planning-results .executive-table td {
+  padding: 13px 12px;
+  font-weight: 400;
+}
+.planning-results .executive-table th:first-child {
+  padding-left: 20px;
+}
+.planning-results .executive-table td:last-child {
+  padding-right: 12px;
+  width: 42px;
+}
+.planning-results .executive-table strong,
+.planning-results .row-title {
+  font-weight: 400;
+}
+.planning-results .executive-table small {
+  font-size: 11px;
+  color: #687487;
+}
+.planning-results .choose-button {
+  padding: 6px 4px;
+}
+.planning-results .choose-button > span {
+  display: none;
+}
+.planning-results .table-mobile-hint {
+  display: block;
+  font-size: 10px;
+  padding: 0 20px 10px;
+  color: #687487;
+}
+.planning-results .table-footer {
+  padding: 14px 20px;
+  line-height: 1.6;
+}
+.calculation-details {
+  margin-top: 18px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0 22px;
+}
+.calculation-details > summary {
+  padding: 18px 0;
+  color: #374151;
+  font-size: 15px;
+  font-weight: 500;
+}
+.calculation-parameters {
+  display: grid;
+  gap: 22px;
+  padding: 4px 0 20px;
+}
+.calculation-parameters h2,
+.calculation-parameters h3,
+.calculation-parameters h4 {
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 500;
+  margin: 0 0 10px;
+}
+.calculation-parameters p {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: #687487;
+  margin: 0 0 12px;
+}
+.parameter-section {
+  min-width: 0;
+}
+.parameter-list {
+  margin: 0;
+  display: grid;
+  gap: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.parameter-list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px solid #f0f2f5;
+  align-items: baseline;
+}
+.parameter-list dt {
+  color: #687487;
+  font-weight: 400;
+}
+.parameter-list dd {
+  color: #374151;
+  margin: 0;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.calculation-parameters a {
+  color: #4564bf;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.calculation-parameters table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.calculation-parameters th,
+.calculation-parameters td {
+  padding: 7px 0;
+  border-bottom: 1px solid #f0f2f5;
+  text-align: left;
+  font-weight: 400;
+}
+.calculation-parameters td:last-child {
+  text-align: right;
+}
+.calculation-parameters ul {
+  font-size: 12px;
+  line-height: 1.6;
+  padding-left: 18px;
+  color: #687487;
+}
+.calculation-details .economics-toggle {
+  margin: 4px 0 18px;
+}
+@media (min-width: 1650px) {
+  .planning-results .executive-table {
+    min-width: 0;
+  }
+  .planning-results .table-mobile-hint {
+    display: none;
+  }
+}
+@media (max-width: 1200px) and (min-width: 981px) {
+  .executive-shell {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+  .planning-columns {
+    gap: 20px;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  }
+  .planning-tasks .use-case-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .planning-tasks {
+    position: static;
+  }
+  .planning-results .decision-heading {
+    flex-wrap: wrap;
+  }
+  .decision-period {
+    display: flex;
+    align-items: center;
+  }
+}
+@media (max-width: 980px) {
+  .planning-columns {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .planning-tasks {
+    position: static;
+  }
+  .planning-results .executive-table {
+    min-width: 610px;
+  }
+}
+@media (max-width: 720px) {
+  .executive-shell {
+    padding: 24px 18px;
+  }
+  .executive-page-heading h1 {
+    font-size: 25px;
+  }
+  .planning-tasks .task-selection,
+  .planning-results .decision-card {
+    padding: 18px;
+  }
+  .planning-results .decision-card {
+    padding-bottom: 0;
+  }
+  .planning-results .decision-heading {
+    flex-wrap: wrap;
+  }
+  .decision-period {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .planning-results .decision-heading h2 {
+    font-size: 23px;
+  }
+  .planning-results .decision-metrics strong {
+    font-size: 26px;
+  }
+  .planning-results .decision-saving strong {
+    font-size: 22px;
+  }
+  .planning-results .decision-saving small {
+    margin-left: 0;
+  }
+  .calculation-details {
+    padding: 0 18px;
+  }
+  .parameter-list > div {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+@media (max-width: 520px) {
+  .planning-tasks .use-case-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.header-inner {
+  max-width: 1720px;
+  padding-left: 36px;
+  padding-right: 36px;
+}
+@media (min-width: 1500px) {
+  .planning-results .table-mobile-hint {
+    display: none;
+  }
+}
+@media (max-width: 720px) {
+  .header-inner {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+}

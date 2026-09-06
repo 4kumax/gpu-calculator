@@ -160,6 +160,7 @@ test("strict schema rejects unknown inherited-key spellings and duplicate IDs", 
 test("schema-2 migration preserves prices but never attributes an unverified rental quote", () => {
   const legacy = plain();
   legacy.schemaVersion = 2;
+  delete legacy.catalogUpdateVersion;
   delete legacy.catalogVersion;
   delete legacy.deploymentProfiles;
   delete legacy.qualityAssessments;
@@ -292,6 +293,7 @@ test("an enabled alternative deployment profile can replace a disabled legacy re
 test("schema-3 migration adds explicit business workloads without changing existing catalog values", () => {
   const legacy = plain();
   legacy.schemaVersion = 3;
+  delete legacy.catalogUpdateVersion;
   delete legacy.scenarioPresets;
   delete legacy.defaultScenarioId;
   delete legacy.assumptions.defaultInputTokens;
@@ -303,7 +305,7 @@ test("schema-3 migration adds explicit business workloads without changing exist
   assert.ok(result.config, result.errors.join("\n"));
   assert.equal(result.config.schemaVersion, 4);
   assert.equal(result.config.gpus[0].nodePriceRub, 1234567);
-  assert.equal(result.config.assumptions.defaultHoursMonth, 217);
+  assert.equal(result.config.assumptions.defaultHoursMonth, 720);
   assert.deepEqual(result.config.models, legacy.models);
   assert.deepEqual(result.config.deploymentProfiles, legacy.deploymentProfiles);
   assert.equal(result.config.scenarioPresets.length, 1);
@@ -384,6 +386,7 @@ test("business scenario validation rejects missing workloads and invalid referen
 test("migration corrects only the unmodified built-in Kimi weight assumption", () => {
   const legacy = plain();
   legacy.schemaVersion = 3;
+  delete legacy.catalogUpdateVersion;
   delete legacy.scenarioPresets;
   delete legacy.defaultScenarioId;
   delete legacy.assumptions.defaultInputTokens;
@@ -435,13 +438,18 @@ test("fresh defaults retain the original combined corporate scenarios and worklo
     "agents",
   ]);
   assert.equal(preset.input.concurrency, 8);
-  assert.equal(preset.input.hoursMonth, 360);
+  assert.equal(preset.input.hoursMonth, 720);
+  assert.equal(preset.input.rentalMode, "dedicated-node");
+  assert.equal(preset.input.reserveRentalMode, "always-on");
+  assert.equal(config.assumptions.defaultHoursMonth, 720);
+  assert.equal(config.catalogUpdateVersion, 1);
   assert.equal(preset.input.years, 3);
   assert.equal(preset.input.priority, "balance");
 });
 
 test("untouched generated group defaults are retired without deleting records or user edits", () => {
   const old = cloneDefaultConfig();
+  delete old.catalogUpdateVersion;
   old.scenarioPresets = createBusinessScenarioPresets(old.tasks);
   old.defaultScenarioId = "pilot";
   const original = structuredClone(old);
@@ -463,5 +471,127 @@ test("untouched generated group defaults are retired without deleting records or
   old.scenarioPresets[0].input.hoursMonth = 217;
   const edited = parseConfig(old);
   assert.equal(edited.config?.defaultScenarioId, "pilot");
-  assert.equal(edited.config?.scenarioPresets[0].input.hoursMonth, 217);
+  assert.equal(edited.config?.scenarioPresets[0].input.hoursMonth, 720);
+  assert.equal(
+    edited.config?.scenarioPresets[0].input.concurrency,
+    old.scenarioPresets[0].input.concurrency,
+  );
+});
+
+test("live catalogs apply the 720-hour dedicated policy once while preserving custom prices and workload", () => {
+  for (const hoursMonth of [160, 360, 730]) {
+    const old = cloneDefaultConfig();
+    delete old.catalogUpdateVersion;
+    old.gpus = old.gpus.filter((gpu) => gpu.id !== "h20");
+    old.catalogVersion = "customer-prices-17";
+    old.assumptions.defaultHoursMonth = hoursMonth;
+    old.assumptions.electricityRubKwh = 18;
+    const active = old.scenarioPresets.find(
+      (preset) => preset.id === old.defaultScenarioId,
+    )!;
+    active.input = {
+      ...active.input,
+      taskIds: ["frontier", "contracts"],
+      concurrency: 13,
+      inputTokens: 25000,
+      outputTokens: 2500,
+      years: 2,
+      hoursMonth,
+      rentalMode: "gpu-hour",
+      reserveRentalMode: "active-hours",
+    };
+    old.gpus[0].nodePriceRub = 9876543;
+    const original = structuredClone(old);
+    const migrated = parseConfig(old);
+    assert.ok(migrated.config, migrated.errors.join(" "));
+    const config = migrated.config;
+    assert.equal(config.catalogUpdateVersion, 1);
+    assert.equal(config.catalogVersion, "customer-prices-17");
+    assert.equal(config.assumptions.defaultHoursMonth, 720);
+    assert.equal(config.assumptions.electricityRubKwh, 18);
+    assert.deepEqual(config.scenarioPresets[0].input, {
+      ...active.input,
+      hoursMonth: 720,
+      rentalMode: "dedicated-node",
+      reserveRentalMode: "always-on",
+    });
+    assert.deepEqual(config.gpus.slice(0, -1), old.gpus);
+    assert.equal(config.gpus.at(-1)?.id, "h20");
+    assert.deepEqual(old, original, "migration must not mutate input");
+    assert.deepEqual(parseConfig(config).config, config);
+    assert.deepEqual(
+      parseConfig(config).warnings,
+      [],
+      "policy migration must run only once",
+    );
+    config.scenarioPresets[0].input.hoursMonth = 240;
+    config.scenarioPresets[0].input.rentalMode = "gpu-hour";
+    assert.equal(
+      parseConfig(config).config?.scenarioPresets[0].input.hoursMonth,
+      240,
+      "future explicit edits remain editable",
+    );
+  }
+});
+
+test("H20 addition is factual about memory, explicit about prices and never creates launch profiles", () => {
+  const config = cloneDefaultConfig();
+  const h20 = config.gpus.find((gpu) => gpu.id === "h20")!;
+  assert.ok(h20);
+  assert.equal(h20.memoryGb, 96);
+  assert.equal(h20.vendor, "NVIDIA");
+  assert.match(h20.sourceUrl, /^https:\/\/docs\.nvidia\.com\//);
+  assert.equal(h20.purchaseQuote.kind, "Инженерная оценка");
+  assert.equal(h20.rentalQuote.kind, "Инженерная оценка");
+  assert.equal(h20.purchaseQuote.sourceUrl, "");
+  assert.equal(h20.rentalQuote.sourceUrl, "");
+  assert.ok(h20.nodePriceRub > 0 && h20.rentPerGpuHourRub > 0);
+  assert.ok(
+    !config.deploymentProfiles.some((profile) => profile.gpuId === "h20"),
+  );
+  assert.ok(!config.models.some((model) => model.recommendedGpuId === "h20"));
+  for (const id of ["h20", "custom-nvidia-h20"]) {
+    const old = cloneDefaultConfig();
+    delete old.catalogUpdateVersion;
+    const existing = old.gpus.find((gpu) => gpu.id === "h20")!;
+    existing.id = id;
+    existing.enabled = false;
+    existing.nodePriceRub = 7777777;
+    existing.rentPerGpuHourRub = 219;
+    existing.sourceUrl = "https://example.com/customer-h20";
+    const before = structuredClone(existing);
+    const migrated = parseConfig(old);
+    assert.ok(migrated.config);
+    assert.equal(migrated.config.gpus.length, old.gpus.length);
+    assert.deepEqual(
+      migrated.config.gpus.find((gpu) => gpu.id === id),
+      before,
+    );
+  }
+});
+
+test("immutable catalog snapshots bypass new always-on defaults and additive GPU updates", () => {
+  const old = cloneDefaultConfig();
+  delete old.catalogUpdateVersion;
+  old.gpus = old.gpus.filter((gpu) => gpu.id !== "h20");
+  old.assumptions.defaultHoursMonth = 730;
+  old.scenarioPresets[0].input.hoursMonth = 160;
+  old.scenarioPresets[0].input.rentalMode = "gpu-hour";
+  old.scenarioPresets[0].input.reserveRentalMode = "active-hours";
+  const parsed = parseConfig(old, { preserveCalculationDefaults: true });
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(parsed.config, old);
+  assert.deepEqual(parsed.warnings, []);
+  assert.equal(parsed.config?.catalogUpdateVersion, undefined);
+  const marked = cloneDefaultConfig();
+  marked.scenarioPresets[0].input.hoursMonth = 730;
+  assert.equal(
+    parseConfig(marked).config,
+    null,
+    "future live defaults cannot exceed the current monthly hours",
+  );
+  assert.ok(
+    parseConfig(marked, { preserveCalculationDefaults: true }).config,
+    "historical snapshots keep their earlier monthly norm",
+  );
 });

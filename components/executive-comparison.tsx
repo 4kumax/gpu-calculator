@@ -1,11 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { ArrowDown, ArrowUpRight, Check, ChevronDown } from "lucide-react";
-import { compactRub, formatRub, type CalculationInput } from "@/lib/calculator";
+import {
+  compactRub,
+  formatRub,
+  HOURS_PER_MONTH,
+  type CalculationInput,
+} from "@/lib/calculator";
 import type { AppConfig } from "@/lib/config";
 import type { ComparisonRow, DeploymentComparison } from "@/lib/comparison";
 import { CostAnalysis } from "@/components/cost-analysis";
+import { CalculationParameters } from "@/components/calculation-parameters";
 
 const money = (value: number) => compactRub(value).replace(/\.([0-9])/g, ",$1");
 
@@ -28,9 +34,10 @@ export function ExecutiveComparison({
   const [showAll, setShowAll] = useState(false);
   const [costsOpen, setCostsOpen] = useState(false);
   const [rowDetail, setRowDetail] = useState<string | null>(null);
-  const detailsRef = useRef<HTMLDetailsElement>(null);
   const result = selected?.result;
   const months = input.years * 12;
+  const paidHours =
+    input.rentalMode === "dedicated-node" ? HOURS_PER_MONTH : input.hoursMonth;
   const activeModelId = config.models.some(
     (model) => model.id === modelId && model.enabled,
   )
@@ -83,7 +90,7 @@ export function ExecutiveComparison({
               >
                 {recommended ? <Check size={14} /> : <ArrowUpRight size={14} />}
                 {recommended
-                  ? "Оптимальный вариант по сценарию"
+                  ? "Рекомендация для выбранных задач"
                   : selected.eligible
                     ? "Выбранный вариант"
                     : "Вариант требует проверки"}
@@ -103,18 +110,27 @@ export function ExecutiveComparison({
                 </span>
               </p>
             </div>
-            <span className="horizon-label">Горизонт · {months} мес.</span>
+            <div className="decision-period">
+              <span className="horizon-label">Горизонт · {months} мес.</span>
+              <span>{paidHours} ч/мес. аренды</span>
+            </div>
           </div>
           <div className="decision-metrics">
             <div className={result.decision === "buy" ? "preferred" : ""}>
               <span>Покупка и владение</span>
               <strong>{money(result.buyTco)}</strong>
-              <small>Все расходы за {months} месяцев</small>
+              <small>Оборудование и расходы за {months} мес.</small>
             </div>
             <div className={result.decision === "rent" ? "preferred" : ""}>
               <span>Аренда и обслуживание</span>
               <strong>{money(result.rentTco)}</strong>
               <small>{money(result.rentMonthly)} в месяц</small>
+              <small>
+                {input.rentalMode === "dedicated-node"
+                  ? "Полные узлы · "
+                  : "Рабочие GPU · "}
+                {paidHours} оплачиваемых ч/мес.
+              </small>
             </div>
             <div className="decision-saving">
               <span>
@@ -141,13 +157,8 @@ export function ExecutiveComparison({
                   ? "Производительность подтверждена для указанной нагрузки."
                   : "Плановая оценка. Перед закупкой требуется проверка на вашей нагрузке."}
             </span>
-            <a
-              href="#calculation-details"
-              onClick={() => {
-                if (detailsRef.current) detailsRef.current.open = true;
-              }}
-            >
-              Основания расчёта <ArrowUpRight size={12} />
+            <a href="#calculation-details">
+              Все параметры <ArrowUpRight size={12} />
             </a>
           </div>
         </section>
@@ -315,136 +326,18 @@ export function ExecutiveComparison({
 
       {result && selected && (
         <details
-          className="quiet-details"
+          className="quiet-details calculation-details"
           id="calculation-details"
-          ref={detailsRef}
+          open
         >
           <summary>
-            Почему столько GPU и что входит в оценку <ChevronDown size={16} />
+            Все параметры расчёта <ChevronDown size={16} />
           </summary>
-          <div className="calculation-explainer">
-            <div>
-              <h3>Количество GPU</h3>
-              <dl className="explanation-list">
-                <div>
-                  <dt>Только размещение весов</dt>
-                  <dd>от {result.plan.weightOnlyMinGpuCount} GPU</dd>
-                </div>
-                <div>
-                  <dt>Память для одного запроса</dt>
-                  <dd>от {result.plan.singleRequestMinGpuCount} GPU</dd>
-                </div>
-                <div>
-                  <dt>Один экземпляр модели</dt>
-                  <dd>{result.plan.baseGpuCount} GPU</dd>
-                </div>
-                <div>
-                  <dt>Экземпляров под нагрузку</dt>
-                  <dd>{result.replicas}</dd>
-                </div>
-                <div className="explanation-total">
-                  <dt>Рабочая конфигурация</dt>
-                  <dd>{result.gpuCount} GPU</dd>
-                </div>
-                <div>
-                  <dt>Покупка с округлением и резервом</dt>
-                  <dd>{result.purchasedGpuCount} GPU</dd>
-                </div>
-              </dl>
-              <p>
-                Минимум по памяти не гарантирует поддержку связки оборудования и
-                движка. Для MoE учитываются все веса модели, включая неактивных
-                экспертов.
-              </p>
-            </div>
-            <div>
-              <h3>Нагрузка сценария</h3>
-              <dl className="explanation-list">
-                <div>
-                  <dt>Одновременные запросы</dt>
-                  <dd>{result.effectiveConcurrency}</dd>
-                </div>
-                <div>
-                  <dt>Вход / ответ, токенов</dt>
-                  <dd>
-                    {result.effectiveInputTokens.toLocaleString("ru-RU")} /{" "}
-                    {result.outputTokens.toLocaleString("ru-RU")}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Работа в месяц</dt>
-                  <dd>{input.hoursMonth} ч</dd>
-                </div>
-                <div>
-                  <dt>Запросов на экземпляр</dt>
-                  <dd>{result.sessionsPerReplica}</dd>
-                </div>
-                <div>
-                  <dt>Веса / кэш запросов</dt>
-                  <dd>
-                    {Math.round(result.requiredWeightMemoryGb).toLocaleString(
-                      "ru-RU",
-                    )}{" "}
-                    /{" "}
-                    {Math.round(result.requiredKvMemoryGb).toLocaleString(
-                      "ru-RU",
-                    )}{" "}
-                    ГБ
-                  </dd>
-                </div>
-              </dl>
-              <p>
-                Технические значения заданы сценарием и редактируются на
-                странице «Параметры».
-              </p>
-            </div>
-          </div>
-          <div className="evidence-details">
-            <h3>Источники и ограничения</h3>
-            <div className="evidence-links">
-              {[
-                {
-                  label: "Модель",
-                  url: result.model.sourceUrl,
-                  date: result.model.sourceDate,
-                },
-                {
-                  label: "Профиль запуска",
-                  url: result.profile.sourceUrl,
-                  date: result.profile.sourceDate,
-                },
-                {
-                  label: "Покупка",
-                  url: result.gpu.purchaseQuote.sourceUrl,
-                  date: result.gpu.purchaseQuote.sourceDate,
-                },
-                {
-                  label: "Аренда",
-                  url: result.gpu.rentalQuote.sourceUrl,
-                  date: result.gpu.rentalQuote.sourceDate,
-                },
-              ].map((source) => (
-                <div key={source.label}>
-                  {source.url ? (
-                    <a href={source.url} target="_blank" rel="noreferrer">
-                      {source.label}
-                      <ArrowUpRight size={12} />
-                    </a>
-                  ) : (
-                    <span>{source.label}: оценка</span>
-                  )}
-                  <small>{source.date || "Дата не указана"}</small>
-                </div>
-              ))}
-            </div>
-            <ul>
-              {Array.from(
-                new Set([...selected.reasons, ...result.warnings]),
-              ).map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-          </div>
+          <CalculationParameters
+            config={config}
+            input={input}
+            result={result}
+          />
           <button
             className="text-button economics-toggle"
             aria-expanded={costsOpen}
@@ -502,7 +395,7 @@ function ComparisonTableRow({
             {gpuMode ? row.gpu.name : row.model.name}
           </span>
           {!gpuMode && <span className="row-subtitle">{row.gpu.name}</span>}
-          {recommended && <span className="row-badge">Оптимальный</span>}
+          {recommended && <span className="row-badge">Рекомендация</span>}
           {!row.eligible && (
             <button
               className="row-limitation"

@@ -134,6 +134,7 @@ test("миграция v2 сохраняет исходный файл до яв
   const storage = new MemoryStorage();
   const {
     catalogVersion,
+    catalogUpdateVersion,
     deploymentProfiles,
     qualityAssessments,
     scenarioPresets,
@@ -141,6 +142,7 @@ test("миграция v2 сохраняет исходный файл до яв
     ...base
   } = cloneDefaultConfig();
   void catalogVersion;
+  void catalogUpdateVersion;
   void deploymentProfiles;
   void qualityAssessments;
   void scenarioPresets;
@@ -313,6 +315,7 @@ test("v3 draft migration preserves incomplete edits and adds scenario defaults w
   const storage = new MemoryStorage();
   const config: Record<string, any> = structuredClone(cloneDefaultConfig());
   config.schemaVersion = 3;
+  delete config.catalogUpdateVersion;
   delete config.scenarioPresets;
   delete config.defaultScenarioId;
   delete config.assumptions.defaultInputTokens;
@@ -333,4 +336,21 @@ test("v3 draft migration preserves incomplete edits and adds scenario defaults w
   assert.equal(loaded.draft?.config.models[0].name, "");
   assert.equal(loaded.draft?.config.scenarioPresets.length, 1);
   assert.equal(storage.getItem(DRAFT_KEY), raw);
+});
+
+test("historical catalog reads preserve the original monthly policy and GPU list", () => {
+  const storage = new MemoryStorage();
+  const old = cloneDefaultConfig();
+  delete old.catalogUpdateVersion;
+  old.gpus = old.gpus.filter((gpu) => gpu.id !== "h20");
+  old.assumptions.defaultHoursMonth = 360;
+  old.scenarioPresets[0].input.hoursMonth = 160;
+  old.scenarioPresets[0].input.rentalMode = "gpu-hour";
+  storage.setItem(
+    HISTORY_KEY,
+    JSON.stringify([
+      { config: old, message: "До перехода на постоянную работу" },
+    ]),
+  );
+  assert.deepEqual(readLocalHistory(storage)[0].config, old);
 });

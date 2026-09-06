@@ -46,8 +46,11 @@ const IMMUTABLE_AUDIT_SCHEMA = [
     ON gpu_catalog_history FOR EACH STATEMENT EXECUTE FUNCTION gpu_catalog_reject_audit_mutation()`,
 ];
 
-function checkedConfig(value: unknown): AppConfig {
-  const parsed = parseConfig(value);
+function checkedConfig(
+  value: unknown,
+  preserveCalculationDefaults = false,
+): AppConfig {
+  const parsed = parseConfig(value, { preserveCalculationDefaults });
   if (!parsed.config || parsed.errors.length)
     throw new Error("Stored catalogue is invalid");
   return parsed.config;
@@ -129,7 +132,7 @@ export class CatalogStore {
     return result.rows.length
       ? {
           ...summary(result.rows[0]),
-          config: checkedConfig(result.rows[0].config),
+          config: checkedConfig(result.rows[0].config, true),
         }
       : null;
   }
